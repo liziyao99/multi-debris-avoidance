@@ -1,13 +1,13 @@
-from tree.tree import GST
-gst = GST(10, 10, 6, 6, 3)
-
-from tree.tree import stateDict
+from trainer.trainer import treeTrainer
 from agent.agent import debugAgent
-from env.propagator import debugPropagator
-sd = stateDict(6, 6, 3)
-gst.reset(sd)
-A = debugAgent()
-P = debugPropagator()
+from env.env import debugEnv
+from data.dicts import concat_dicts
 
-gst.step(A, P)
-gst.select()
+pop = 100
+max_gen = 200
+env = debugEnv(pop, max_gen)
+agent = debugAgent()
+T = treeTrainer(env, agent)
+dicts = T.simulate()
+d = concat_dicts(dicts)
+T.update(d)

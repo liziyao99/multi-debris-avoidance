@@ -2,14 +2,13 @@ import anytree
 import numpy as np
 import torch
 from env.propagator import Propagator
-from env.dicts import stateDict
+from data.dicts import stateDict, init_transDict
 from agent.agent import rlAgent
 
 
 class stateNode(anytree.Node):
     def __init__(self, name, 
-                 state_dim:int, obs_dim:int, action_dim:int,
-                 gen:int=None):
+                 state_dim:int, obs_dim:int, action_dim:int):
         super().__init__(name)
         self.sd = stateDict(state_dim, obs_dim, action_dim)
         self.td_target = 0.
@@ -33,9 +32,15 @@ class stateNode(anytree.Node):
         return self.td_target
     
     def attach(self, parent):
+        '''
+            attach self to parent.
+        '''
         self.parent = parent
     
     def detach(self):
+        '''
+            cutoff all children.
+        '''
         self.children = []
 
     @property
@@ -71,13 +76,14 @@ class GST:
         for i in range(max_gen):
             self.nodes.append([])
             for j in range(population):
-                self.nodes[i].append(stateNode(f'gen{i}_node{j}',state_dim, obs_dim, action_dim, gen=i))
+                self.nodes[i].append(stateNode(f'gen{i}_node{j}',state_dim, obs_dim, action_dim))
                 if i==0:
                     self.nodes[i][j].parent = self.root
         self.nodes = np.array(self.nodes)
 
     def reset(self, root_stateDict:stateDict):
         self.gen = 0
+        self.root.detach()
         self.root.sd = root_stateDict
         for i in range(self.max_gen):
             for j in range(self.population):
@@ -91,8 +97,9 @@ class GST:
             states, obss, indices = self.select()
             # agent take action
             _, a = agent.act(torch.from_numpy(obss).to(agent.device))
+            a = a.detach().cpu().numpy()
             # env propagate
-            ns, r, d, no = propagator.propagate(states, a.detach().cpu().numpy())
+            ns, r, d, no = propagator.propagate(states, a)
             if self.gen==self.max_gen: d[:] = True
             # agent evaluate new states
             v = agent.critic(torch.from_numpy(no).to(agent.device))
@@ -100,11 +107,13 @@ class GST:
             for i in range(self.population):
                 sd = stateDict.from_data(ns[i], a[i], r[i], d[i], no[i])
                 self.nodes[self.gen][i].sd = sd
-                self.nodes[self.gen][i].value = v[i]
+                self.nodes[self.gen][i].value = v[i].item()
                 if self.gen>0:
                     self.nodes[self.gen][i].attach(self.nodes[self.gen-1][indices[i]])
-            self.gen += 1
+                else: # gen == 0
+                    self.nodes[self.gen][i].attach(self.root)
             done = bool(np.min([node.done for node in self.nodes[self.gen]]))
+            self.gen += 1
         else:
             done = True
         return done
@@ -135,7 +144,22 @@ class GST:
         self.root.backup()
         dicts = []
         for leaf in self.root.leaves:
-            lineage = leaf.ancestors
-            # TODO
+            if not leaf.done:
+                continue
+            lineage = list(leaf.ancestors) + [leaf]
+            lineage = tuple(lineage)
+            length = len(lineage)
+            trans_dict = init_transDict(length, self.state_dim, self.obs_dim, self.action_dim)
+            for i in range(length):
+                trans_dict["states"][i,:] = lineage[i].state
+                trans_dict["obss"][i,:] = lineage[i].obs
+                trans_dict["dones"][i] = lineage[i].done
+                trans_dict["td_targets"][i] = lineage[i].td_target
+                if i<length-1:
+                    trans_dict["actions"][i,:] = lineage[i+1].action
+                    trans_dict["rewards"][i] = lineage[i+1].reward
+                    trans_dict["next_states"][i,:] = lineage[i+1].state
+                    trans_dict["next_obss"][i,:] = lineage[i+1].obs
+            dicts.append(trans_dict)
         return dicts
     

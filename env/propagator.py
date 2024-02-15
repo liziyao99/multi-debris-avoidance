@@ -30,17 +30,18 @@ class Propagator:
     
 
 class debugPropagator(Propagator):
-    def __init__(self) -> None:
+    def __init__(self, max_dist=10.) -> None:
         state_dim = 6
         obs_dim = 6
         action_dim = 3
         super().__init__(state_dim, obs_dim, action_dim)
+        self.max_dist = max_dist
 
     def getObs(self, states:np.ndarray) -> np.ndarray:
         return states
 
     def getReward(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
-        return self.dist2origin(states)
+        return self.max_dist-self.dist2origin(states)
 
     def getNextState(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         next_states = np.zeros_like(states)
@@ -49,7 +50,7 @@ class debugPropagator(Propagator):
         return next_states
 
     def getDone(self, states:np.ndarray) -> np.ndarray:
-        dones = self.dist2origin(states) > 10
+        dones = self.dist2origin(states) > self.max_dist
         return dones
     
     def dist2origin(self, states):
