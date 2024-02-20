@@ -24,9 +24,9 @@ class outputBoundConfig:
         for i in range(self.n_output):
             if torch.isfinite(self.upper_bounds[i]) and torch.isfinite(self.lower_bounds[i]):
                 self.activations.append(lambda x:affine(torch.tanh(x), -1, 1, self.upper_bounds[i].item(), self.lower_bounds[i].item()))
-            elif torch.isfinite(self.upper_bounds[i]) and not torch.isfinite(self.lower_bounds[i]):
+            elif torch.isfinite(self.upper_bounds[i]) and (not torch.isfinite(self.lower_bounds[i])):
                 self.activations.append(lambda x:(-torch.relu(x)+self.upper_bounds[i].item()))
-            elif not torch.isfinite(self.upper_bounds[i]) and torch.isfinite(self.lower_bounds[i]):
+            elif (not torch.isfinite(self.upper_bounds[i])) and torch.isfinite(self.lower_bounds[i]):
                 self.activations.append(lambda x:( torch.relu(x)+self.lower_bounds[i].item()))
             else:
                 self.activations.append(lambda x:x)
@@ -36,6 +36,14 @@ class outputBoundConfig:
         for i in range(self.n_output):
             y[:,i] = self.activations[i](x[:,i])
         return y
+    
+    def uniSample(self, size:int):
+        '''
+            sample uniformally between output bounds.
+        '''
+        if self.upper_bounds.isinf().any() or self.lower_bounds.isinf().any():
+            raise(ValueError("output bounds are not finite."))
+        return torch.rand(size, self.n_output)*torch.abs(self.upper_bounds-self.lower_bounds)+self.lower_bounds
 
 class fcNet(nn.Module):
     def __init__(self, 

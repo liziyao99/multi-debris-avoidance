@@ -1,4 +1,5 @@
 from agent.net import *
+
 import typing
 import torch
 import torch.nn.functional as F
@@ -34,7 +35,10 @@ class rlAgent:
         sample = self.actor.sample(output)
         return output, sample
 
-    def update(self, trans_dict):
+    def update(self, trans_dict) -> typing.Tuple[float]:
+        '''
+            returns: `actor_loss`, `critic_loss`.
+        '''
         raise(NotImplementedError)
     
     def save(self, path="../model/dicts.ptd"):
@@ -82,8 +86,10 @@ class boundedRlAgent(rlAgent):
     def _init_critic(self, hiddens, lr):
         return super()._init_critic(hiddens, lr)
 
-    def update(self, trans_dict):
-        raise(NotImplementedError)
+    def explore(self, size:int):
+        output = self.actor.obc.uniSample(size).to(self.device)
+        sample = self.actor.sample(output)
+        return output, sample
 
 class debugAgent(boundedRlAgent):
     def __init__(self,
@@ -97,8 +103,8 @@ class debugAgent(boundedRlAgent):
                  critic_lr = 1e-4,
                  device=None,
                 ) -> None:
-        upper_bounds = [action_upper_bound]*action_dim + [10]*action_dim
-        lower_bounds = [action_lower_bound]*action_dim + [0.01]*action_dim
+        upper_bounds = [action_upper_bound]*action_dim + [1]*action_dim
+        lower_bounds = [action_lower_bound]*action_dim + [0.1]*action_dim
         super().__init__(obs_dim, action_dim, actor_hiddens, critic_hiddens, upper_bounds, lower_bounds, actor_lr, critic_lr, device)
         
     def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
@@ -109,10 +115,18 @@ class debugAgent(boundedRlAgent):
         dict_torch = {}
         for key in trans_dict.keys():
             dict_torch[key] = torch.from_numpy(trans_dict[key]).to(self.device)
+
         paras = self.actor(dict_torch["obss"])
         dist = torch.distributions.Normal(paras[:,:self.action_dim], paras[:,self.action_dim:])
-        actor_loss = -dist.log_prob(dict_torch["actions"]).mean()
-        critic_loss = F.mse_loss(self.critic(dict_torch["obss"]).flatten(), dict_torch["td_targets"])
+        log_probs = torch.sum(dist.log_prob(dict_torch["actions"]), dim=1)
+        actor_loss = (log_probs*dict_torch["regrets"]).mean()
+        # actor_loss = -log_probs.mean()
+
+        undone_idx = torch.where(dict_torch["dones"]==False)[0]
+        cl_obj = self.critic(dict_torch["obss"]).flatten()[undone_idx] # critic loss object
+        cl_tgt = dict_torch["td_targets"][undone_idx] # critic loss target
+        critic_loss = F.mse_loss(cl_obj, cl_tgt)
+
         self.actor_opt.zero_grad()
         self.critic_opt.zero_grad()
         actor_loss.backward()

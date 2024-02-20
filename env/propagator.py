@@ -6,7 +6,7 @@ class Propagator:
         self.obs_dim = obs_dim
         self.action_dim = action_dim
 
-    def getObs(self, states:np.ndarray) -> np.ndarray:
+    def getObss(self, states:np.ndarray) -> np.ndarray:
         raise NotImplementedError
     
     def getReward(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
@@ -25,7 +25,7 @@ class Propagator:
         next_states = self.getNextState(states, actions)
         rewards = self.getReward(states, actions)
         dones = self.getDone(states)
-        next_obss = self.getObs(states)
+        next_obss = self.getObss(next_states)
         return next_states, rewards, dones, next_obss
     
 
@@ -37,11 +37,11 @@ class debugPropagator(Propagator):
         super().__init__(state_dim, obs_dim, action_dim)
         self.max_dist = max_dist
 
-    def getObs(self, states:np.ndarray) -> np.ndarray:
+    def getObss(self, states:np.ndarray) -> np.ndarray:
         return states
 
     def getReward(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
-        return self.max_dist-self.dist2origin(states)
+        return (self.max_dist-self.dist2origin(states))/self.max_dist
 
     def getNextState(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         next_states = np.zeros_like(states)
