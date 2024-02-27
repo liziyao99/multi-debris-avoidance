@@ -1,5 +1,5 @@
 import numpy as np
-import typing, copy
+import typing, math
 
 class stateDict:
     def __init__(self, state_dim:int, obs_dim:int, action_dim:int) -> None:
@@ -27,9 +27,11 @@ class stateDict:
         s += f"done:\t{self.done}\n"
         return s
     
-def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int):
+def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int, 
+                   items:typing.Tuple[str]=("td_targets", "regrets", "advantages")):
     '''
-        dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones", "td_targets".
+        dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones" and items.
+        Items are float32 of shape (length,).
     '''
     trans_dict = {
         "states": np.zeros((length,state_dim), dtype=np.float32),
@@ -39,16 +41,31 @@ def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int):
         "next_obss": np.zeros((length,obs_dim), dtype=np.float32),
         "rewards": np.zeros(length, dtype=np.float32),
         "dones": np.zeros(length, dtype=np.bool_),
-        "td_targets": np.zeros(length, dtype=np.float32),
-        "regrets": np.zeros(length, dtype=np.float32)
     }
+    for item in items:
+        trans_dict[item] = np.zeros(length, dtype=np.float32)
     return trans_dict
 
 def concat_dicts(dicts:typing.List[dict]):
-    d = copy.deepcopy(dicts[0])
+    d = {}
+    for key in dicts[0].keys():
+        d[key] = []
     for i in range(1,len(dicts)):
         if d.keys()!=dicts[i].keys():
             raise(ValueError("dicts must have same keys."))
         for key in d.keys():
-            d[key] = np.concatenate((d[key],dicts[i][key]), axis=0)
+            d[key].append(dicts[i][key])
+    for key in d.keys():
+        d[key] = np.concatenate(d[key], axis=0)
     return d
+
+def batch_dict(trans_dict:dict, batch_size:int):
+    dicts = []
+    total = trans_dict["states"].shape[0]
+    n_batches = math.cell(total/batch_size)
+    for i in range(n_batches):
+        d = {}
+        for key in trans_dict.keys():
+            d[key] = trans_dict[key][i*batch_size:(i+1)*batch_size]
+        dicts.append(d)
+    return dicts

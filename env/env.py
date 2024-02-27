@@ -1,9 +1,10 @@
 import numpy as np
+import typing
+
 from env.propagator import *
 from env.propagator import Propagator
-from tree.tree import GST, stateDict
+from tree.tree import GST, stateDict, GST_A
 from agent.agent import rlAgent
-import torch
 
 class dummyEnv:
     def __init__(self,
@@ -60,10 +61,12 @@ class singleEnv(dummyEnv):
         self.state[:] = state[:]
         self.episode = 0
 
-    def step(self, a:np.ndarray):
+    def step(self, a:np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, bool]:
         '''
-            args: action.
-            returns: state, obs, action, reward, next_state, next_obs, done.
+            args: 
+                `a`:action.
+            returns: 
+                state, obs, action, reward, next_state, next_obs, done.
         '''
         s = np.expand_dims(self.state, axis=0)
         if len(a.shape)==1:
@@ -77,7 +80,7 @@ class singleEnv(dummyEnv):
         r = r[0]
         ns = ns.flatten()
         no = no.flatten()
-        d = d[0] if self.episode<self.max_episode else True
+        d = d[0] or self.episode>=self.max_episode
         transit = (s, o, a, r, ns, no, d)
 
         self.state[:] = ns[:]
@@ -95,6 +98,10 @@ class singleEnv(dummyEnv):
         trans_dict["next_obss"][i,:] = transit[5]
         trans_dict["dones"][i] = transit[6]
         return trans_dict
+    
+    def cut_dict(self, trans_dict:dict):
+        for key in trans_dict.keys():
+            trans_dict[key] = trans_dict[key][:self.episode]
 
 class treeEnv(dummyEnv):
     def __init__(self,
@@ -125,10 +132,20 @@ class treeEnv(dummyEnv):
         return self.tree.get_transDicts()
     
 
-class debugEnv(treeEnv):
+class debugSingleEnv(singleEnv):
+    def __init__(self, max_episode: int) -> None:
+        self.propagator = debugPropagator()
+        self.max_episode = max_episode
+
+        self.state = np.zeros(self.propagator.state_dim, dtype=np.float32)
+        self.episode = 0
+    
+
+class debugTreeEnv(treeEnv):
     def __init__(self, population: int, max_gen: int) -> None:
         self.propagator = debugPropagator()
-        self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+        # self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+        self.tree = GST_A(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
     
     def reset(self, root_stateDict:stateDict=None):
         if root_stateDict is None:

@@ -12,6 +12,9 @@ class Propagator:
     def getReward(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         raise NotImplementedError
     
+    def getTruncatedReward(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+    
     def getNextState(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         raise NotImplementedError
     
@@ -36,12 +39,14 @@ class debugPropagator(Propagator):
         action_dim = 3
         super().__init__(state_dim, obs_dim, action_dim)
         self.max_dist = max_dist
+        self.k = 0.2
 
     def getObss(self, states:np.ndarray) -> np.ndarray:
         return states
 
     def getReward(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
-        return (self.max_dist-self.dist2origin(states))/self.max_dist
+        rad, vel = self.norms(states)
+        return (self.max_dist-rad-self.k*vel)/self.max_dist
 
     def getNextState(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         next_states = np.zeros_like(states)
@@ -50,8 +55,9 @@ class debugPropagator(Propagator):
         return next_states
 
     def getDone(self, states:np.ndarray) -> np.ndarray:
-        dones = self.dist2origin(states) > self.max_dist
+        rad, vel = self.norms(states)
+        dones = rad>self.max_dist
         return dones
     
-    def dist2origin(self, states):
-        return np.linalg.norm(states[:, :3], axis=1)
+    def norms(self, states):
+        return np.linalg.norm(states[:, :3], axis=1), np.linalg.norm(states[:, 3:], axis=1)
