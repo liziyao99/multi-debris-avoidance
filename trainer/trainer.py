@@ -33,6 +33,10 @@ class dummyTrainer:
 
     def test(self, **kwargs):
         raise(NotImplementedError)
+    
+    @property
+    def propagator(self):
+        return self.env.propagator
 
 class treeTrainer(dummyTrainer):
     def __init__(self, env:treeEnv, agent:rlAgent, gamma=1.) -> None:
@@ -58,11 +62,11 @@ class treeTrainer(dummyTrainer):
         self.reset_env()
         while not self.env.step(self.agent):
             pass
-        self.tree.backup()
+        # self.tree.backup()
         dicts = self.tree.get_transDicts(redundant=dicts_redundant)
         return dicts
 
-    def train(self, n_episode=10, n_sim=100):
+    def train(self, n_episode=10, n_sim=100, batch_size=1280):
         true_values = []
         actor_loss = []
         critic_loss = []
@@ -72,9 +76,15 @@ class treeTrainer(dummyTrainer):
                 progress.tasks[task].description = "episode {0} of {1}".format(i+1, n_episode)
                 progress.tasks[task].completed = 0
                 for _ in range(n_sim):
+                    al, cl = [], []
                     trans_dicts = self.simulate(dicts_redundant=False)
                     trans_dict = dicts.concat_dicts(trans_dicts)
-                    al, cl = self.update(trans_dict)
+                    dict_batches = dicts.batch_dict(trans_dict, batch_size=batch_size)
+                    for d in dict_batches:
+                        al_, cl_ = self.agent.update(d)
+                        al.append(al_)
+                        cl.append(cl_)
+                    # al, cl = self.update(trans_dict)
 
                     total_rewards = []
                     trans_dicts_r = self.tree.get_transDicts(redundant=True)
@@ -84,8 +94,8 @@ class treeTrainer(dummyTrainer):
 
                     progress.update(task, advance=1)
                     true_values.append(np.mean(total_rewards))
-                    actor_loss.append(al)
-                    critic_loss.append(cl)
+                    actor_loss.append(np.mean(al))
+                    critic_loss.append(np.mean(cl))
                 self.agent.save("../model/check_point{0}.ptd".format(i))
                 np.savez("../model/log.npz", 
                          true_values = np.array(true_values),

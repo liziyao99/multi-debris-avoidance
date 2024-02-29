@@ -142,10 +142,17 @@ class debugSingleEnv(singleEnv):
     
 
 class debugTreeEnv(treeEnv):
-    def __init__(self, population: int, max_gen: int) -> None:
+    def __init__(self, population: int, max_gen: int, A=True) -> None:
+        '''
+            `A` for debug `treeDataArray` and `GST_A`.
+            TODO: deprive `GST` and replace it by `GST_A`.
+        '''
         self.propagator = debugPropagator()
-        # self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
-        self.tree = GST_A(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+        self.A = A
+        if not A:
+            self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+        else:
+            self.tree = GST_A(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
     
     def reset(self, root_stateDict:stateDict=None):
         if root_stateDict is None:

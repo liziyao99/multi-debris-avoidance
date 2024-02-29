@@ -287,8 +287,8 @@ class GST_A:
                  obs_dim: int, 
                  action_dim: int, 
                  gamma=1, 
-                 act_explore_eps=0.2,
-                 select_explore_eps=0.5
+                 act_explore_eps=0.5,
+                 select_explore_eps=0.2
                 ) -> None:
         self.population = population
         self.max_gen = max_gen
@@ -334,17 +334,17 @@ class GST_A:
         self.root.deflag(flags)
         self.data_array.deflag(flags)
 
-    def step(self, agent:boundedRlAgent, propagator:Propagator, explore=True):
+    def step(self, agent:boundedRlAgent, propagator:Propagator, explore_action=True, explore_select=True):
         '''
             return: `done`
         '''
         if self.gen<self.max_gen:
-            states, obss, indices = self.select()
+            states, obss, indices = self.select(explore=explore_select)
             batch_size = states.shape[0]
             # actor takes action
             _, a_exploit = agent.act(torch.from_numpy(obss).to(agent.device))
             a_exploit = a_exploit.detach().cpu().numpy()
-            if explore:
+            if explore_action:
                 _, a_explore = agent.explore(batch_size)
                 a_explore = a_explore.detach().cpu().numpy()
                 explore_cond = np.tile(np.random.rand(batch_size)<self.act_explore_eps, (3,1)).T
@@ -361,16 +361,16 @@ class GST_A:
             self.data_array.fill_gen(self.gen, states, obss, a, r, ns, no, d, values=v)
             for i in range(self.population):
                 if self.gen>0:
-                    self.nodes[self.gen][i].attach(self.nodes[self.gen-1][indices[i]])
+                    self.nodes[self.gen,i].attach(self.nodes[self.gen-1,indices[i]])
                 else: # gen == 0
-                    self.nodes[self.gen][i].attach(self.root)
+                    self.nodes[self.gen,i].attach(self.root)
             done = d.min()
             self.gen += 1
         else:
             done = True
         return done
     
-    def select(self):
+    def select(self, explore=True):
         '''
             select nodes for next gen.\n
             returns:
@@ -386,13 +386,17 @@ class GST_A:
             done = self.data_array.dones[self.gen-1].flatten()
             undone_indices = np.where(np.array(done)==False)[0]
             values = self.data_array.items["values"][self.gen-1][undone_indices].flatten()
-            dist_exploit = torch.distributions.Categorical(torch.softmax(torch.tensor(values), dim=0))
+            fitness = torch.softmax(torch.from_numpy(values), dim=0)
+            dist_exploit = torch.distributions.Categorical(fitness)
             uid_indices_exploit = dist_exploit.sample((self.population,)).detach().cpu().numpy() # uid: indices of `undone_indices`
-            uid_indices_explore = np.random.randint(0, len(undone_indices), (self.population,))
-            uid_indices = np.where(np.random.rand(self.population)<self.select_explore_eps, uid_indices_explore, uid_indices_exploit)
+            if explore:
+                uid_indices_explore = np.random.randint(0, len(undone_indices), (self.population,))
+                uid_indices = np.where(np.random.rand(self.population)<self.select_explore_eps, uid_indices_explore, uid_indices_exploit)
+            else:
+                uid_indices = uid_indices_exploit
             indices = undone_indices[uid_indices]
-            states = self.data_array.next_states[self.gen-1][indices]
-            obss = self.data_array.next_obss[self.gen-1][indices]
+            states = self.data_array.next_states[self.gen-1,indices]
+            obss = self.data_array.next_obss[self.gen-1,indices]
         return states, obss, indices
     
     def backup(self, mode="mean"):
@@ -432,7 +436,7 @@ class GST_A:
         '''
             call `backup` first.
         '''
-        # self.backup()
+        self.backup()
         dicts = []
         self.deflag(("traced",))
         for leaf in self.root.leaves:
@@ -478,10 +482,15 @@ class GST_A:
             idx = np.argmax([len(node.descendants) for node in self.nodes[0]])
         elif mode=="td_target":
             self.backup(mode="max")
-            idx = np.argmax([node.td_target for node in self.nodes[0]])
+            idx = np.argmax(self.data_array.items["td_targets"][0,:,0])
         else:
             raise(ValueError("mode must be \"descendants\" or \"td_target\"."))
-        return self.nodes[0][idx].sd
+        sd = stateDict.from_data(state=self.data_array.next_states[0,idx], # here is different from GST!
+                                 action=self.data_array.actions[0,idx],
+                                 reward=self.data_array.rewards[0,idx,0],
+                                 done=self.data_array.dones[0,idx,0],
+                                 obs=self.data_array.next_obss[0,idx])
+        return sd
     
     def decide(self, root_stateDict, agent:rlAgent, propagator:Propagator, t_max:float, pick_mode="descendants"):
         '''
@@ -495,7 +504,7 @@ class GST_A:
         t0 = time.time()
         self.reset(root_stateDict)
         while time.time()-t0<t_max:
-            done = self.step(agent, propagator, explore=False)
+            done = self.step(agent, propagator, explore_action=False, explore_select=False)
             if done:
                 break
         return self.pick(mode=pick_mode)

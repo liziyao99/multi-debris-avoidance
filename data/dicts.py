@@ -62,7 +62,7 @@ def concat_dicts(dicts:typing.List[dict]):
 def batch_dict(trans_dict:dict, batch_size:int):
     dicts = []
     total = trans_dict["states"].shape[0]
-    n_batches = math.cell(total/batch_size)
+    n_batches = math.ceil(total/batch_size)
     for i in range(n_batches):
         d = {}
         for key in trans_dict.keys():
