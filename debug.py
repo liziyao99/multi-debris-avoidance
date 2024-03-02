@@ -10,8 +10,9 @@ def debug1(pop=20):
     # T.agent.load("../model/check_point3.ptd")
     # ds = T.simulate()
     # _ = T.test(1)
-    T.train()
-    return T.env.tree.gen
+    T.train(n_episode=1)
+    # _ = T.test(t_max=1,)
+    return
 
 def debug2():
     from trainer.trainer import singleTrainer

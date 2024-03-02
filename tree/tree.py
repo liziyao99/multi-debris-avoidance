@@ -5,7 +5,7 @@ import torch
 import time, typing
 from env.propagator import Propagator
 from data.dicts import stateDict, init_transDict
-from data.array import indexNode, treeDataArray
+from data.array import indexNode, nodesArray
 from agent.agent import rlAgent, boundedRlAgent
 
 
@@ -102,7 +102,7 @@ class stateNode(indexNode):
     def obs(self):
         return self.sd.obs
 
-class GST:
+class GST_0:
     def __init__(self, population:int, max_gen:int, state_dim:int, obs_dim:int, action_dim:int, 
                  gamma=1., act_explore_eps=0.2, select_explore_eps=0.2) -> None:
         self.population = population
@@ -310,7 +310,7 @@ class GST_A:
             for j in range(population):
                 self.nodes[i,j] = indexNode(name=f"gen{i}node{j}", gen=i, idx=j)
 
-        self.data_array = treeDataArray(population, max_gen, state_dim, obs_dim, action_dim, flags, items)
+        self.data_array = nodesArray(population, max_gen, state_dim, obs_dim, action_dim, flags, items)
         '''
             `states` transfer to `next_states` by applying `actions`, get `rewards` and `dones`.\n
             `items["values"]` are estimated values of `next_states`.\n
@@ -485,7 +485,7 @@ class GST_A:
             idx = np.argmax(self.data_array.items["td_targets"][0,:,0])
         else:
             raise(ValueError("mode must be \"descendants\" or \"td_target\"."))
-        sd = stateDict.from_data(state=self.data_array.next_states[0,idx], # here is different from GST!
+        sd = stateDict.from_data(state=self.data_array.next_states[0,idx], # here is different from GST_0!
                                  action=self.data_array.actions[0,idx],
                                  reward=self.data_array.rewards[0,idx,0],
                                  done=self.data_array.dones[0,idx,0],

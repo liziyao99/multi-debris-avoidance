@@ -1,7 +1,7 @@
 from agent.agent import rlAgent
 from env.env import dummyEnv, treeEnv, singleEnv
 from tree.tree import stateDict
-import data.dicts as dicts
+import data.dicts as D
 
 from rich.progress import Progress
 import numpy as np
@@ -78,8 +78,8 @@ class treeTrainer(dummyTrainer):
                 for _ in range(n_sim):
                     al, cl = [], []
                     trans_dicts = self.simulate(dicts_redundant=False)
-                    trans_dict = dicts.concat_dicts(trans_dicts)
-                    dict_batches = dicts.batch_dict(trans_dict, batch_size=batch_size)
+                    trans_dict = D.concat_dicts(trans_dicts)
+                    dict_batches = D.batch_dict(trans_dict, batch_size=batch_size)
                     for d in dict_batches:
                         al_, cl_ = self.agent.update(d)
                         al.append(al_)
@@ -107,9 +107,9 @@ class treeTrainer(dummyTrainer):
         '''
             args:
                 `t_max`: max searching time each step, second.
-                `pick_mode`: see `GST.pick`.
+                `pick_mode`: see `GST_0.pick`.
         '''
-        trans_dict = dicts.init_transDict(self.tree.max_gen+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim)
+        trans_dict = D.init_transDict(self.tree.max_gen+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim)
         sd = self.new_state()
         self.testEnv.reset(sd.state)
         done = False
@@ -143,7 +143,7 @@ class singleTrainer(dummyTrainer):
         return sd
      
     def simulate(self):
-        trans_dict = dicts.init_transDict(self.env.max_episode+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim,
+        trans_dict = D.init_transDict(self.env.max_episode+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim,
                                           items=("advantages",))
         sd = self.new_state()
         self.env.reset(sd.state)

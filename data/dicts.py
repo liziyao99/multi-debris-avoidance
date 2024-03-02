@@ -2,21 +2,32 @@ import numpy as np
 import typing, math
 
 class stateDict:
-    def __init__(self, state_dim:int, obs_dim:int, action_dim:int) -> None:
+    def __init__(self, state_dim:int, obs_dim:int, action_dim:int, 
+                 flags:typing.Tuple[str]=tuple(), items:typing.Tuple[str]=tuple()) -> None:
         self.state = np.zeros(state_dim, dtype=np.float32)
         self.obs = np.zeros(obs_dim, dtype=np.float32)
         self.action = np.zeros(action_dim, dtype=np.float32) # action done in last state
         self.reward = 0. # reward for transition from last state to current state
         self.done = False # current state done
+        self.flags = {}
+        for flag in flags:
+            self.flags[flag] = False
+        self.items = {}
+        for item in items:
+            self.items[item] = 0.
 
     @classmethod
-    def from_data(cls, state:np.ndarray, action:np.ndarray, reward:float, done:bool, obs:np.ndarray):
-        sd = cls(state.shape[0], obs.shape[0], action.shape[0])
+    def from_data(cls, state:np.ndarray, action:np.ndarray, reward:float, done:bool, obs:np.ndarray, 
+                  flags:typing.Tuple[str]=tuple(),
+                  item_datas:dict={}):
+        sd = cls(state.shape[0], obs.shape[0], action.shape[0], flags=flags, items=tuple(item_datas.keys()))
         sd.state = state
         sd.action = action
         sd.reward = reward
         sd.done = done
         sd.obs = obs
+        for key in item_datas.keys():
+            sd.items[key] = item_datas[key]
         return sd
     
     def __str__(self) -> str:
@@ -26,6 +37,28 @@ class stateDict:
         s += f"reward:\t{self.reward}\n"
         s += f"done:\t{self.done}\n"
         return s
+    
+    def load(self, another):
+        self.state[...] = another.state[...]
+        self.obs[...] = another.obs[...]
+        self.action[...] = another.action[...]
+        self.reward = another.reward
+        self.done = another.done
+        for key in self.flags.keys():
+            if key not in another.flags.keys():
+                continue
+            self.flags[key] = another.flags[key]
+        for key in self.items.keys():
+            if key not in another.items.keys():
+                continue
+            self.items[key] = another.items[key]
+        return self
+    
+    def deflag(self, flags:typing.Tuple[str]=None):
+        if keys is None:
+            keys = self.flags.keys()
+        for flag in flags:
+            self.flags[flag] = False
     
 def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int, 
                    items:typing.Tuple[str]=("td_targets", "regrets", "advantages")):

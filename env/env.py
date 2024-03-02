@@ -3,8 +3,9 @@ import typing
 
 from env.propagator import *
 from env.propagator import Propagator
-from tree.tree import GST, stateDict, GST_A
+from tree.tree import GST_0, stateDict, GST_A
 from agent.agent import rlAgent
+from data.tree import GST
 
 class dummyEnv:
     def __init__(self,
@@ -112,7 +113,7 @@ class treeEnv(dummyEnv):
                  max_gen:int
                 ) -> None:
         self.propagator = Propagator(state_dim, obs_dim, action_dim)
-        self.tree = GST(population, max_gen, state_dim, obs_dim, action_dim)
+        self.tree = GST_0(population, max_gen, state_dim, obs_dim, action_dim)
 
     @classmethod
     def from_propagator(cls, propagator: Propagator, population:int, max_gen:int):
@@ -144,15 +145,15 @@ class debugSingleEnv(singleEnv):
 class debugTreeEnv(treeEnv):
     def __init__(self, population: int, max_gen: int, A=True) -> None:
         '''
-            `A` for debug `treeDataArray` and `GST_A`.
-            TODO: deprive `GST` and replace it by `GST_A`.
+            `A` for debug `nodesArray` and `GST_A`.
+            TODO: deprive `GST_0` and replace it by `GST_A`.
         '''
         self.propagator = debugPropagator()
         self.A = A
         if not A:
-            self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
-        else:
             self.tree = GST_A(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+        else:
+            self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
     
     def reset(self, root_stateDict:stateDict=None):
         if root_stateDict is None:
