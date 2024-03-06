@@ -2,6 +2,7 @@ from agent.agent import rlAgent
 from env.env import dummyEnv, treeEnv, singleEnv
 from tree.tree import stateDict
 import data.dicts as D
+from plotting.dataplot import logPlot, dataPlot
 
 from rich.progress import Progress
 import numpy as np
@@ -13,7 +14,12 @@ class dummyTrainer:
         self.agent = agent
 
     def new_state(self) -> stateDict:
-        raise(NotImplementedError)
+        sd = stateDict(self.env.state_dim, self.env.obs_dim, self.env.action_dim)
+        state = self.propagator.randomInitStates(1)
+        obs = self.env.propagator.getObss(state)
+        sd.state[:] = state.flatten()
+        sd.obs[:] = obs.flatten()
+        return sd
 
     def reset_env(self):
         sd = self.new_state()
@@ -44,19 +50,11 @@ class treeTrainer(dummyTrainer):
         self.agent = agent
         self.env.tree.gamma = gamma # discount factor
         self.testEnv = singleEnv.from_propagator(env.propagator, env.tree.max_gen)
+        self.plot = dataPlot(("true_values", "actor_loss", "critic_loss"))
 
     @property
     def tree(self):
         return self.env.tree
-
-    def new_state(self) -> stateDict:
-        # for debug, to be overloaded.
-        sd = stateDict(self.env.state_dim, self.env.obs_dim, self.env.action_dim)
-        sd.state[:3] = np.random.uniform(low=-5, high=5, size=3)
-        sd.state[3:] = np.random.uniform(low=-0.1, high=0.1, size=3)
-        obs = self.env.propagator.getObss(np.expand_dims(sd.state, axis=0))
-        sd.obs[:] = obs.flatten()
-        return sd
 
     def simulate(self, dicts_redundant=False):
         self.reset_env()
@@ -84,16 +82,9 @@ class treeTrainer(dummyTrainer):
                         al_, cl_ = self.agent.update(d)
                         al.append(al_)
                         cl.append(cl_)
-                    # al, cl = self.update(trans_dict)
-
-                    total_rewards = []
-                    trans_dicts_r = self.tree.get_transDicts(redundant=True)
-                    for d in trans_dicts_r:
-                        total_reward = d["rewards"].sum()
-                        total_rewards.append(total_reward)
-
+                    total_reward = trans_dicts[0]["rewards"].sum()
                     progress.update(task, advance=1)
-                    true_values.append(np.mean(total_rewards))
+                    true_values.append(total_reward)
                     actor_loss.append(np.mean(al))
                     critic_loss.append(np.mean(cl))
                 self.agent.save("../model/check_point{0}.ptd".format(i))
@@ -102,8 +93,10 @@ class treeTrainer(dummyTrainer):
                          actor_loss = np.array(actor_loss),
                          critic_loss = np.array(critic_loss)
                         )
+                self.plot.set_data((np.array(true_values),np.array(actor_loss),np.array(critic_loss)))
+                self.plot.save_fig("../model/log.png")
                 
-    def test(self, t_max=0.02, pick_mode="descendants"):
+    def test(self, decide_mode="time", t_max=0.02, g_max=5):
         '''
             args:
                 `t_max`: max searching time each step, second.
@@ -114,7 +107,7 @@ class treeTrainer(dummyTrainer):
         self.testEnv.reset(sd.state)
         done = False
         while not done:
-            sd = self.tree.decide(sd, self.agent, self.env.propagator, t_max=t_max, pick_mode=pick_mode)
+            sd = self.tree.decide(sd, self.agent, self.env.propagator, decide_mode=decide_mode, t_max=t_max, g_max=g_max)
             transit = self.testEnv.step(sd.action)
             done = transit[-1]
             self.testEnv.fill_dict(trans_dict, transit)
@@ -132,15 +125,10 @@ class singleTrainer(dummyTrainer):
         state = np.expand_dims(self.env.state, axis=0)
         obs = self.env.propagator.getObss(state)
         return obs.flatten()
-
-    def new_state(self) -> stateDict:
-        # for debug, to be overloaded.
-        sd = stateDict(self.env.state_dim, self.env.obs_dim, self.env.action_dim)
-        sd.state[:3] = np.random.uniform(low=-5, high=5, size=3)
-        sd.state[3:] = np.random.uniform(low=-0.1, high=0.1, size=3)
-        obs = self.env.propagator.getObss(np.expand_dims(sd.state, axis=0))
-        sd.obs[:] = obs.flatten()
-        return sd
+    
+    def reset_env(self):
+        sd = self.new_state()
+        self.env.reset(sd.state)
      
     def simulate(self):
         trans_dict = D.init_transDict(self.env.max_episode+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim,

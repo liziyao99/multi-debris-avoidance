@@ -64,6 +64,12 @@ class rlAgent:
         self.actor_opt.load_state_dict(dicts["p_opt"])
         self.critic_opt.load_state_dict(dicts["v_opt"])
 
+    def actorDist(self, output):
+        '''
+            returns: distribution of actor.
+        '''
+        return self.actor.distribution(output)
+
 class boundedRlAgent(rlAgent):
     def __init__(self,
                  obs_dim:int = 6,
@@ -98,7 +104,7 @@ class boundedRlAgent(rlAgent):
         sample = self.actor.sample(output)
         return output, sample
 
-class debugTreeAgent(boundedRlAgent):
+class normalDistAgent(boundedRlAgent):
     def __init__(self,
                  obs_dim:int = 6,
                  action_dim:int = 3,
@@ -131,8 +137,8 @@ class debugTreeAgent(boundedRlAgent):
         # actor_loss = -log_probs.mean()
 
         undone_idx = torch.where(dict_torch["dones"]==False)[0]
-        cl_obj = self.critic(dict_torch["obss"]).flatten()[undone_idx] # critic loss object
-        cl_tgt = dict_torch["td_targets"][undone_idx] # critic loss target
+        cl_obj = self.critic(dict_torch["obss"]).flatten() # critic loss object
+        cl_tgt = dict_torch["td_targets"] # critic loss target
         critic_loss = F.mse_loss(cl_obj, cl_tgt)
 
         self.actor_opt.zero_grad()

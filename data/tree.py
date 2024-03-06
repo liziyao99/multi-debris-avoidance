@@ -35,7 +35,7 @@ class GST:
             Initially 0. `step` will complete `gen` and then `gen+=1`.
         '''
 
-        flags = ("dummy",)
+        flags = ("preserved", "aborted")
         items = ("values", "td_targets", "regrets", "advantages")
         self.flag_keys = flags
         self.item_keys = items
@@ -81,7 +81,7 @@ class GST:
             if explore_action:
                 _, a_explore = agent.explore(batch_size)
                 a_explore = a_explore.detach().cpu().numpy()
-                explore_cond = np.tile(np.random.rand(batch_size)<self.act_explore_eps, (3,1)).T
+                explore_cond = np.tile(np.random.rand(batch_size)<self.act_explore_eps, (self.action_dim,1)).T
                 a = np.where(explore_cond, a_explore, a_exploit)
             else:
                 a = a_exploit
@@ -102,7 +102,9 @@ class GST:
             done = True
         return done
     
-    def select(self, explore=True) -> typing.Tuple[np.ndarray[float],np.ndarray[float],np.ndarray[int]]:
+    def select(self, 
+               explore=True
+               ) -> typing.Tuple[np.ndarray[float],np.ndarray[float],np.ndarray[int]]:
         '''
             select nodes for next gen.\n
             returns:
@@ -194,9 +196,8 @@ class GST:
                 trans_dict["next_states"][i,:] = self.nodes.next_states[gen,idx]
                 trans_dict["next_obss"][i,:] = self.nodes.next_obss[gen,idx]
                 trans_dict["dones"][i] = self.nodes.dones[gen,idx,0]
-                for key in self.nodes.items.keys():
-                    if key in trans_dict.keys():
-                        trans_dict[key][i] = self.nodes.items[key][gen,idx,0]
+                for key in self.item_keys:
+                    trans_dict[key][i] = self.nodes.items[key][gen,idx,0]
             dicts.append(trans_dict)
         return dicts
     
@@ -214,7 +215,7 @@ class GST:
                                     obs=self.nodes.next_obss[0,idx])
         return sd
 
-    def decide(self, root_stateDict, agent:agent.rlAgent, propagator:propagator.Propagator, t_max:float, pick_mode="tg_target"):
+    def decide(self, root_stateDict, agent:agent.rlAgent, propagator:propagator.Propagator, decide_mode="time", t_max:float=.1, g_max=5):
         '''
             pick the best action from gen 0 in given time `t`.\n
             args:
@@ -223,12 +224,20 @@ class GST:
                 `propagator`: to propagate state.
                 `t_max`: max searching time each step, second.
         '''
-        t0 = time.time()
         self.reset(root_stateDict)
-        while time.time()-t0<t_max:
-            done = self.step(agent, propagator, explore_action=False, explore_select=False)
-            if done:
-                break
+        if decide_mode=="time":
+            t0 = time.time()
+            while time.time()-t0<t_max:
+                done = self.step(agent, propagator, explore_action=False, explore_select=False)
+                if done:
+                    break
+        elif decide_mode=="gen":
+            for _ in range(g_max):
+                done = self.step(agent, propagator, explore_action=False, explore_select=False)
+                if done:
+                    break
+        else:
+            raise(ValueError("decide_mode must be 'time' or 'gen'."))
         return self.pick()
 
     def parentOf(self, gen, idx) -> typing.Tuple[int,int]:

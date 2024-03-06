@@ -27,9 +27,7 @@ class dataPlot:
     def from_log(cls, file, min_window_size=11):
         log = np.load(file)
         this = cls(log.keys(), min_window_size=min_window_size)
-        datas = []
-        for key in log.keys():
-            datas.append(log[key])
+        datas = [log[key] for key in log.keys()]
         datas = tuple(datas)
         this.set_data(datas)
         return this
@@ -46,7 +44,7 @@ class dataPlot:
             self.objs[i][1].set_data(np.arange(len(v_ma)), v_ma)
             self.axs[i].set_xlim(0, len(data[i]))
             self.axs[i].set_ylim(min(data[i]), max(data[i]))
-        plt.draw()
+        # plt.draw()
         
     def save_fig(self, file_name:str):
         plt.show()

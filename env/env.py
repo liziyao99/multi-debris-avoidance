@@ -1,11 +1,13 @@
 import numpy as np
 import typing
 
-from env.propagator import *
-from env.propagator import Propagator
-from tree.tree import GST_0, stateDict, GST_A
+from env.propagator import Propagator, debugPropagator
+from env.propagatorT import PropagatorT
+from env.propagatorB import dummyPropagatorB
+from tree.tree import stateDict
 from agent.agent import rlAgent
 from data.tree import GST
+import torch
 
 class dummyEnv:
     def __init__(self,
@@ -113,13 +115,18 @@ class treeEnv(dummyEnv):
                  max_gen:int
                 ) -> None:
         self.propagator = Propagator(state_dim, obs_dim, action_dim)
-        self.tree = GST_0(population, max_gen, state_dim, obs_dim, action_dim)
+        self.tree = GST(population, max_gen, state_dim, obs_dim, action_dim)
 
     @classmethod
     def from_propagator(cls, propagator: Propagator, population:int, max_gen:int):
-        te = cls(propagator.state_dim, propagator.obs_dim, propagator.action_dim)
+        te = cls(propagator.state_dim, propagator.obs_dim, propagator.action_dim, population, max_gen)
         te.propagator = propagator
         return te
+    
+    def reset(self, root_stateDict:stateDict=None):
+        if root_stateDict is None:
+            root_stateDict = stateDict(self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+        self.tree.reset(root_stateDict)
 
     def step(self, agent:rlAgent):
         '''
@@ -129,8 +136,33 @@ class treeEnv(dummyEnv):
     
     def simulate(self, agent:rlAgent):
         while not self.step(agent):
-            pass
+            self._stepProcess(agent)
         return self.tree.get_transDicts()
+    
+    def _stepProcess(self, agent:rlAgent, *args, **kwargs):
+        pass
+    
+class treeEnvB(treeEnv):
+    def __init__(self, state_dim: int, obs_dim: int, action_dim: int, population: int, max_gen: int, device:str) -> None:
+        propN = Propagator(state_dim, obs_dim, action_dim)
+        propT = PropagatorT(state_dim, obs_dim, action_dim, device=device)
+        self.propagator = dummyPropagatorB(propN, propT)
+        self.tree = GST(population, max_gen, state_dim, obs_dim, action_dim)
+        self.seqOpt = False
+
+    @classmethod
+    def from_propagator(cls, propagator: dummyPropagatorB, population: int, max_gen: int, device:str):
+        te = cls(propagator.state_dim, propagator.obs_dim, propagator.action_dim, population, max_gen, device)
+        te.propagator = propagator
+        return te
+    
+    def _stepProcess(self, agent: rlAgent, horizon=None):
+        if self.seqOpt:
+            if horizon is None:
+                horizon = self.tree.max_gen//10
+            states = self.tree.nodes.next_states[self.tree.gen-1]
+            states = torch.from_numpy(states).to(agent.device)
+            _ = self.propagator.seqOptTgt(states, agent, horizon=horizon)
     
 
 class debugSingleEnv(singleEnv):
@@ -143,19 +175,7 @@ class debugSingleEnv(singleEnv):
     
 
 class debugTreeEnv(treeEnv):
-    def __init__(self, population: int, max_gen: int, A=True) -> None:
-        '''
-            `A` for debug `nodesArray` and `GST_A`.
-            TODO: deprive `GST_0` and replace it by `GST_A`.
-        '''
+    def __init__(self, population: int, max_gen: int) -> None:
         self.propagator = debugPropagator()
-        self.A = A
-        if not A:
-            self.tree = GST_A(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
-        else:
-            self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
-    
-    def reset(self, root_stateDict:stateDict=None):
-        if root_stateDict is None:
-            root_stateDict = stateDict(self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
-        self.tree.reset(root_stateDict)
+        self.tree = GST(population, max_gen, self.propagator.state_dim, self.propagator.obs_dim, self.propagator.action_dim)
+
