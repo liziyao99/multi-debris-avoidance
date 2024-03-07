@@ -1,6 +1,4 @@
-from typing import List
 from agent.net import *
-import utils
 
 import typing
 import torch
@@ -154,8 +152,8 @@ class PPOClipAgent(boundedRlAgent):
     def __init__(self, 
                  obs_dim: int = 6, 
                  action_dim: int = 3, 
-                 actor_hiddens: List[int] = [128] * 5, 
-                 critic_hiddens: List[int] = [128] * 5, 
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 critic_hiddens: typing.List[int] = [128] * 5, 
                  action_upper_bound=0.2, 
                  action_lower_bound=-0.2, 
                  actor_lr=1e-5, 

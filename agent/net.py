@@ -43,7 +43,16 @@ class outputBoundConfig:
         '''
         if self.upper_bounds.isinf().any() or self.lower_bounds.isinf().any():
             raise(ValueError("output bounds are not finite."))
-        return torch.rand(size, self.n_output)*torch.abs(self.upper_bounds-self.lower_bounds)+self.lower_bounds
+        return torch.rand(size, self.n_output).to(self.device)*torch.abs(self.upper_bounds-self.lower_bounds)+self.lower_bounds
+
+    def to(self, device:str):
+        self.upper_bounds = self.upper_bounds.to(device)
+        self.lower_bounds = self.lower_bounds.to(device)
+        return self
+    
+    @property
+    def device(self):
+        return self.upper_bounds.device
 
 class fcNet(nn.Module):
     def __init__(self, 
@@ -110,6 +119,10 @@ class boundedFcNet(fcNet):
             see `outputBoundConfig`.
         '''
 
+    def to(self, device:str, **kwargs):
+        self.obc.to(device)
+        return super().to(device=device, **kwargs)
+
     def post_process(self, x):
         return self.obc(x)
     
@@ -128,8 +141,16 @@ class normalDistNet(boundedFcNet):
         '''
             sample from normal dist, output are mean and var.
         '''
-        return self.distribution(output).sample()
+        sample = self.distribution(output).sample()
+        return self.clip(sample)
     
     def distribution(self, output):
         dist = torch.distributions.Normal(output[:,:self.n_sample], output[:,self.n_sample:])
         return dist
+    
+    def clip(self, x:torch.Tensor):
+        '''
+            clip output to output bounds.
+        '''
+        x = x.clamp(self.obc.lower_bounds[:self.n_sample], self.obc.upper_bounds[:self.n_sample])
+        return x

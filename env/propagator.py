@@ -174,6 +174,21 @@ class CWPropagator(motionSystem):
         super().__init__(state_mat, max_dist=max_dist)
         self.dt = dt
         self.orbit_rad = orbit_rad
+        self.k = .01
+
+    def getRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
+        batch_size = states.shape[0]
+        iter_step = 10
+        r0, v0 = states[:, :3], states[:, 3:]
+        R, V = np.zeros((iter_step, batch_size, 3), dtype=np.float32), np.zeros((iter_step, batch_size, 3), dtype=np.float32)
+        R[0,...] = r0
+        V[0,...] = v0
+        for i in range(1, iter_step):
+            R[i,...] = R[i-1,...] + V[i-1,...]
+            V[i,...] = V[i-1,...] + actions*self.dt
+        rads = np.linalg.norm(R, axis=2)
+        mean_rads = np.mean(rads, axis=0)
+        return (self.max_dist-mean_rads)/self.max_dist
 
     def getNextStates(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
         con_vec = matrix.CW_constConVecs(0, self.dt, actions, self.orbit_rad)

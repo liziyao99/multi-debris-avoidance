@@ -47,6 +47,9 @@ class dummyTrainer:
 class treeTrainer(dummyTrainer):
     def __init__(self, env:treeEnv, agent:rlAgent, gamma=1.) -> None:
         self.env = env
+        '''
+            treeEnv
+        '''
         self.agent = agent
         self.env.tree.gamma = gamma # discount factor
         self.testEnv = singleEnv.from_propagator(env.propagator, env.tree.max_gen)
@@ -99,16 +102,26 @@ class treeTrainer(dummyTrainer):
     def test(self, decide_mode="time", t_max=0.02, g_max=5):
         '''
             args:
+                `decide_mode`: `time`, `gen`, `determined`.
                 `t_max`: max searching time each step, second.
                 `pick_mode`: see `GST_0.pick`.
         '''
         trans_dict = D.init_transDict(self.tree.max_gen+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim)
         sd = self.new_state()
+        self.env.reset(sd)
         self.testEnv.reset(sd.state)
         done = False
         while not done:
-            sd = self.tree.decide(sd, self.agent, self.env.propagator, decide_mode=decide_mode, t_max=t_max, g_max=g_max)
-            transit = self.testEnv.step(sd.action)
+            if decide_mode!="determined":
+                sd = self.tree.decide(sd, self.agent, self.env.propagator, decide_mode=decide_mode, t_max=t_max, g_max=g_max)
+                action = sd.action
+            else:
+                state = self.testEnv.state.reshape((1,-1))
+                obs = self.propagator.getObss(state)
+                obs = torch.from_numpy(obs).to(self.agent.device)
+                _, action = self.agent.act(obs)
+                action = action.detach().cpu().numpy()
+            transit = self.testEnv.step(action)
             done = transit[-1]
             self.testEnv.fill_dict(trans_dict, transit)
         total_rewards = trans_dict["rewards"].sum()

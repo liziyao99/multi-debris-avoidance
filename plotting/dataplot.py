@@ -76,7 +76,7 @@ def logPlot(file:str,
         plt.show()
     if save_file:
         fig.savefig(save_file)
-    return fig
+    return fig, axs
 
 def moving_average(a, window_size:int=11):
     cumulative_sum = np.cumsum(np.insert(a, 0, 0)) 

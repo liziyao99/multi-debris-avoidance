@@ -148,7 +148,7 @@ class treeEnvB(treeEnv):
         propT = PropagatorT(state_dim, obs_dim, action_dim, device=device)
         self.propagator = dummyPropagatorB(propN, propT)
         self.tree = GST(population, max_gen, state_dim, obs_dim, action_dim)
-        self.seqOpt = False
+        self.seqOpt = True
 
     @classmethod
     def from_propagator(cls, propagator: dummyPropagatorB, population: int, max_gen: int, device:str):

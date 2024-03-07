@@ -237,7 +237,7 @@ class GST:
                 if done:
                     break
         else:
-            raise(ValueError("decide_mode must be 'time' or 'gen'."))
+            raise(ValueError("decide_mode must be 'time' , 'gen'."))
         return self.pick()
 
     def parentOf(self, gen, idx) -> typing.Tuple[int,int]:

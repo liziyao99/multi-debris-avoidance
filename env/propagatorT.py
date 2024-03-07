@@ -58,11 +58,13 @@ class PropagatorT(Propagator):
             return:
                 `reward_total`: target tensor to be maximize.
         '''
+        batch_size = states.shape[0]
         if self.device!=agent.device:
             raise ValueError("device mismatch")
         reward_seq = []
         for i in range(horizon):
-            outputs, actions = agent.act(states)
+            obss = self.getObss(states)
+            outputs, actions = agent.act(obss)
             nominal_actions = outputs[:,:3]
             '''
                 NOTE: `actions` are sampled from distribution, have no grad. 
@@ -70,7 +72,7 @@ class PropagatorT(Propagator):
                 To be overloaded.
             '''
             states, rewards, dones, _ = self.propagate(states, nominal_actions)
-            reward_seq.append(rewards.sum())
+            reward_seq.append(rewards.sum()/batch_size)
             undone_idx = torch.where(dones==False)[0]
             if undone_idx.shape[0]==0:
                 break
@@ -161,6 +163,23 @@ class CWPropagatorT(motionSystemT):
         super().__init__(state_mat, device=device, max_dist=max_dist)
         self.dt = dt
         self.orbit_rad = orbit_rad
+        self.k = .01
+
+    def getRewards(self, states:torch.Tensor, actions:torch.Tensor) -> torch.Tensor:
+        batch_size = states.shape[0]
+        device = states.device
+        iter_step = 10
+        r0, v0 = states[:, :3], states[:, 3:]
+        R = torch.zeros((iter_step, batch_size, 3),device=device)
+        V = torch.zeros((iter_step, batch_size, 3),device=device)
+        R[0,...] = r0
+        V[0,...] = v0
+        for i in range(1, iter_step):
+            R[i,...] = R[i-1,...] + V[i-1,...]
+            V[i,...] = V[i-1,...] + actions*self.dt
+        rads = torch.linalg.norm(R, dim=2)
+        mean_rads = torch.mean(rads, dim=0)
+        return (self.max_dist-mean_rads)/self.max_dist
 
     def getNextStates(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         con_vec = matrix.CW_constConVecsT(0, self.dt, actions, self.orbit_rad)
