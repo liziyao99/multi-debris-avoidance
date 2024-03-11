@@ -167,9 +167,6 @@ class GST:
         # TODO: why regret makes training worse? 
 
     def get_transDicts(self, redundant=False):
-        '''
-            call `backup` first.
-        '''
         self.backup()
         dicts = []
         # self.deflag(("traced",))

@@ -67,6 +67,10 @@ class rlAgent:
             returns: distribution of actor.
         '''
         return self.actor.distribution(output)
+    
+    def share_memory(self):
+        self.actor.share_memory()
+        self.critic.share_memory()
 
 class boundedRlAgent(rlAgent):
     def __init__(self,

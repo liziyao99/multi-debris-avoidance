@@ -1,6 +1,8 @@
 import numpy as np
 import typing, math
 
+BASIC_KEYS = ("states", "obss", "actions", "rewards", "next_states", "next_obss", "dones")
+
 class stateDict:
     def __init__(self, state_dim:int, obs_dim:int, action_dim:int, 
                  flags:typing.Tuple[str]=tuple(), items:typing.Tuple[str]=tuple()) -> None:

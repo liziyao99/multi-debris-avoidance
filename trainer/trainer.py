@@ -2,7 +2,9 @@ from agent.agent import rlAgent
 from env.env import dummyEnv, treeEnv, singleEnv
 from tree.tree import stateDict
 import data.dicts as D
-from plotting.dataplot import logPlot, dataPlot
+from data.buffer import replayBuffer
+from plotting.dataplot import dataPlot
+
 
 from rich.progress import Progress
 import numpy as np
@@ -12,6 +14,7 @@ class dummyTrainer:
     def __init__(self, env:dummyEnv, agent:rlAgent) -> None:
         self.env = env
         self.agent = agent
+        self.buffer = replayBuffer(keys=("dummy",))
 
     def new_state(self) -> stateDict:
         sd = stateDict(self.env.state_dim, self.env.obs_dim, self.env.action_dim)
@@ -45,7 +48,7 @@ class dummyTrainer:
         return self.env.propagator
 
 class treeTrainer(dummyTrainer):
-    def __init__(self, env:treeEnv, agent:rlAgent, gamma=1.) -> None:
+    def __init__(self, env:treeEnv, agent:rlAgent, gamma=1., batch_size=1280) -> None:
         self.env = env
         '''
             treeEnv
@@ -53,21 +56,27 @@ class treeTrainer(dummyTrainer):
         self.agent = agent
         self.env.tree.gamma = gamma # discount factor
         self.testEnv = singleEnv.from_propagator(env.propagator, env.tree.max_gen)
+
         self.plot = dataPlot(("true_values", "actor_loss", "critic_loss"))
+
+        buffer_keys = list(D.BASIC_KEYS) + list(env.tree.item_keys)
+        self.buffer = replayBuffer(keys=buffer_keys, capacity=100*batch_size, minimal_size=10*batch_size, batch_size=batch_size)
+        self.batch_size = batch_size
 
     @property
     def tree(self):
         return self.env.tree
 
-    def simulate(self, dicts_redundant=False):
+    def simulate(self, dicts_redundant=False, n_bufferTrain=0):
         self.reset_env()
         while not self.env.step(self.agent):
-            pass
-        # self.tree.backup()
+            if self.buffer.size >= n_bufferTrain:
+                for _ in range(n_bufferTrain):
+                    self.agent.update(self.buffer.sample(self.batch_size))
         dicts = self.tree.get_transDicts(redundant=dicts_redundant)
         return dicts
 
-    def train(self, n_episode=10, n_sim=100, batch_size=1280):
+    def train(self, n_episode=10, n_sim=100, n_bufferTrain=5):
         true_values = []
         actor_loss = []
         critic_loss = []
@@ -78,9 +87,10 @@ class treeTrainer(dummyTrainer):
                 progress.tasks[task].completed = 0
                 for _ in range(n_sim):
                     al, cl = [], []
-                    trans_dicts = self.simulate(dicts_redundant=False)
+                    trans_dicts = self.simulate(dicts_redundant=False, n_bufferTrain=n_bufferTrain)
                     trans_dict = D.concat_dicts(trans_dicts)
-                    dict_batches = D.batch_dict(trans_dict, batch_size=batch_size)
+                    self.buffer.from_dict(trans_dict)
+                    dict_batches = D.batch_dict(trans_dict, batch_size=self.batch_size)
                     for d in dict_batches:
                         al_, cl_ = self.agent.update(d)
                         al.append(al_)

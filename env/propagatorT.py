@@ -46,7 +46,7 @@ class PropagatorT(Propagator):
     def obssNormalize(self, obss:torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
     
-    def seqOptTgt(self, states:torch.Tensor, agent, horizon:int, optStep=True):
+    def seqOpt(self, states:torch.Tensor, agent, horizon:int, optStep=True):
         '''
             sequence optimization target function, total reward to be maximized, 
             available when reward is contiunous function of state and action.\n
@@ -62,7 +62,7 @@ class PropagatorT(Propagator):
         if self.device!=agent.device:
             raise ValueError("device mismatch")
         reward_seq = []
-        for i in range(horizon):
+        for _ in range(horizon):
             obss = self.getObss(states)
             outputs, actions = agent.act(obss)
             nominal_actions = outputs[:,:3]
@@ -168,14 +168,14 @@ class CWPropagatorT(motionSystemT):
     def getRewards(self, states:torch.Tensor, actions:torch.Tensor) -> torch.Tensor:
         batch_size = states.shape[0]
         device = states.device
-        iter_step = 10
+        iter_step = 3
         r0, v0 = states[:, :3], states[:, 3:]
         R = torch.zeros((iter_step, batch_size, 3),device=device)
         V = torch.zeros((iter_step, batch_size, 3),device=device)
         R[0,...] = r0
         V[0,...] = v0
         for i in range(1, iter_step):
-            R[i,...] = R[i-1,...] + V[i-1,...]
+            R[i,...] = R[i-1,...] + V[i-1,...]*self.dt
             V[i,...] = V[i-1,...] + actions*self.dt
         rads = torch.linalg.norm(R, dim=2)
         mean_rads = torch.mean(rads, dim=0)

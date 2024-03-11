@@ -26,7 +26,8 @@ class replayBuffer:
         for key in self._keys:
             datas.append(trans_dict[key])
         zipped = zip(*datas)
-        if extend: self.buffer.extend(zipped)
+        if extend: 
+            self.buffer.extend(zipped)
         return list(zipped)
 
     def from_dicts(self, dicts:List[dict]):

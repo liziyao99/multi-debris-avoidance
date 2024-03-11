@@ -148,7 +148,7 @@ class treeEnvB(treeEnv):
         propT = PropagatorT(state_dim, obs_dim, action_dim, device=device)
         self.propagator = dummyPropagatorB(propN, propT)
         self.tree = GST(population, max_gen, state_dim, obs_dim, action_dim)
-        self.seqOpt = True
+        self.seqOpt = False
 
     @classmethod
     def from_propagator(cls, propagator: dummyPropagatorB, population: int, max_gen: int, device:str):
@@ -156,13 +156,13 @@ class treeEnvB(treeEnv):
         te.propagator = propagator
         return te
     
-    def _stepProcess(self, agent: rlAgent, horizon=None):
+    def _stepProcess(self, agent: rlAgent, horizon:int=None):
         if self.seqOpt:
             if horizon is None:
                 horizon = self.tree.max_gen//10
             states = self.tree.nodes.next_states[self.tree.gen-1]
             states = torch.from_numpy(states).to(agent.device)
-            _ = self.propagator.seqOptTgt(states, agent, horizon=horizon)
+            _ = self.propagator.seqOpt(states, agent, horizon=horizon)
     
 
 class debugSingleEnv(singleEnv):

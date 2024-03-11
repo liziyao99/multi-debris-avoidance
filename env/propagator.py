@@ -178,7 +178,7 @@ class CWPropagator(motionSystem):
 
     def getRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         batch_size = states.shape[0]
-        iter_step = 10
+        iter_step = 3
         r0, v0 = states[:, :3], states[:, 3:]
         R, V = np.zeros((iter_step, batch_size, 3), dtype=np.float32), np.zeros((iter_step, batch_size, 3), dtype=np.float32)
         R[0,...] = r0

@@ -2,6 +2,8 @@ from trainer.trainer import treeTrainer
 from agent.agent import normalDistAgent
 from env.env import debugTreeEnv
 
+import numpy as np
+
 def debug1(pop=20):
     max_gen = 200
     env = debugTreeEnv(pop, max_gen)
@@ -60,4 +62,8 @@ def debug3():
 
 
 if __name__ == "__main__":
-    debug3()
+    from trainer.example import CWTreeTrainer
+    from trainer.mpTrainer import mpTreeTrainer
+
+    mpt = mpTreeTrainer(2, trainerType=CWTreeTrainer)
+    mpt.train(1, 4, folder="../model/")
