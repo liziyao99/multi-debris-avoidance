@@ -46,23 +46,23 @@ class singleEnv(dummyEnv):
                  state_dim:int,
                  obs_dim:int,
                  action_dim:int,
-                 max_episode:int,
+                 max_stage:int,
                 ) -> None:
         self.propagator = Propagator(state_dim, obs_dim, action_dim)
-        self.max_episode = max_episode
+        self.max_stage = max_stage
 
         self.state = np.zeros(state_dim, dtype=np.float32)
-        self.episode = 0
+        self.stage = 0
 
     @classmethod
-    def from_propagator(cls, propagator:Propagator, max_episode:int):
-        se = cls(propagator.state_dim, propagator.obs_dim, propagator.action_dim, max_episode)
+    def from_propagator(cls, propagator:Propagator, max_stage:int):
+        se = cls(propagator.state_dim, propagator.obs_dim, propagator.action_dim, max_stage)
         se.propagator = propagator
         return se
 
     def reset(self, state):
         self.state[:] = state[:]
-        self.episode = 0
+        self.stage = 0
 
     def step(self, a:np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, bool]:
         '''
@@ -83,16 +83,16 @@ class singleEnv(dummyEnv):
         r = r[0]
         ns = ns.flatten()
         no = no.flatten()
-        d = d[0] or self.episode>=self.max_episode
+        d = d[0] or self.stage>=self.max_stage
         transit = (s, o, a, r, ns, no, d)
 
         self.state[:] = ns[:]
-        self.episode += 1
+        self.stage += 1
 
         return transit
     
     def fill_dict(self, trans_dict:dict, transit:tuple):
-        i = self.episode-1
+        i = self.stage-1
         trans_dict["states"][i,:] = transit[0]
         trans_dict["obss"][i,:] = transit[1]
         trans_dict["actions"][i,:] = transit[2]
@@ -104,7 +104,7 @@ class singleEnv(dummyEnv):
     
     def cut_dict(self, trans_dict:dict):
         for key in trans_dict.keys():
-            trans_dict[key] = trans_dict[key][:self.episode]
+            trans_dict[key] = trans_dict[key][:self.stage]
 
 class treeEnv(dummyEnv):
     def __init__(self,
@@ -166,12 +166,12 @@ class treeEnvB(treeEnv):
     
 
 class debugSingleEnv(singleEnv):
-    def __init__(self, max_episode: int) -> None:
+    def __init__(self, max_stage: int) -> None:
         self.propagator = debugPropagator()
-        self.max_episode = max_episode
+        self.max_stage = max_stage
 
         self.state = np.zeros(self.propagator.state_dim, dtype=np.float32)
-        self.episode = 0
+        self.stage = 0
     
 
 class debugTreeEnv(treeEnv):

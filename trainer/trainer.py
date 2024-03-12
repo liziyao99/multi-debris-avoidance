@@ -37,7 +37,7 @@ class dummyTrainer:
         '''
         return self.agent.update(trans_dict)
     
-    def train(self, n_episode=10, n_sim=100):
+    def train(self, n_epoch=10, n_sim=100):
         raise(NotImplementedError)
 
     def test(self, **kwargs):
@@ -76,14 +76,14 @@ class treeTrainer(dummyTrainer):
         dicts = self.tree.get_transDicts(redundant=dicts_redundant)
         return dicts
 
-    def train(self, n_episode=10, n_sim=100, n_bufferTrain=5):
+    def train(self, n_epoch=10, n_sim=100, n_bufferTrain=5):
         true_values = []
         actor_loss = []
         critic_loss = []
         with Progress() as progress:
             task = progress.add_task("epoch{0}".format(0), total=n_sim)
-            for i in range(n_episode):
-                progress.tasks[task].description = "episode {0} of {1}".format(i+1, n_episode)
+            for i in range(n_epoch):
+                progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 progress.tasks[task].completed = 0
                 for _ in range(n_sim):
                     al, cl = [], []
@@ -154,7 +154,7 @@ class singleTrainer(dummyTrainer):
         self.env.reset(sd.state)
      
     def simulate(self):
-        trans_dict = D.init_transDict(self.env.max_episode+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim,
+        trans_dict = D.init_transDict(self.env.max_stage+1, self.env.state_dim, self.env.obs_dim, self.env.action_dim,
                                           items=("advantages",))
         sd = self.new_state()
         self.env.reset(sd.state)
@@ -167,14 +167,14 @@ class singleTrainer(dummyTrainer):
         self.env.cut_dict(trans_dict)
         return trans_dict
     
-    def train(self, n_episode=10, n_sim=100):
+    def train(self, n_epoch=10, n_sim=100):
         true_values = []
         actor_loss = []
         critic_loss = []
         with Progress() as progress:
             task = progress.add_task("epoch{0}".format(0), total=n_sim)
-            for i in range(n_episode):
-                progress.tasks[task].description = "episode {0} of {1}".format(i+1, n_episode)
+            for i in range(n_epoch):
+                progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 progress.tasks[task].completed = 0
                 for _ in range(n_sim):
                     trans_dict = self.simulate()
