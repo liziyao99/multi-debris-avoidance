@@ -12,7 +12,7 @@ def debug1(pop=20):
     T.agent.load("../model/check_point3.ptd")
     # ds = T.simulate()
     # _ = T.test(1)
-    T.train(n_epoch=1, n_sim=1)
+    T.train(n_epoch=1, n_episode=1)
     # _ = T.test(t_max=1,)
     return
 

@@ -37,7 +37,7 @@ class dummyTrainer:
         '''
         return self.agent.update(trans_dict)
     
-    def train(self, n_epoch=10, n_sim=100):
+    def train(self, n_epoch=10, n_episode=100):
         raise(NotImplementedError)
 
     def test(self, **kwargs):
@@ -76,16 +76,16 @@ class treeTrainer(dummyTrainer):
         dicts = self.tree.get_transDicts(redundant=dicts_redundant)
         return dicts
 
-    def train(self, n_epoch=10, n_sim=100, n_bufferTrain=5):
+    def train(self, n_epoch=10, n_episode=100, n_bufferTrain=5):
         true_values = []
         actor_loss = []
         critic_loss = []
         with Progress() as progress:
-            task = progress.add_task("epoch{0}".format(0), total=n_sim)
+            task = progress.add_task("epoch{0}".format(0), total=n_episode)
             for i in range(n_epoch):
                 progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 progress.tasks[task].completed = 0
-                for _ in range(n_sim):
+                for _ in range(n_episode):
                     al, cl = [], []
                     trans_dicts = self.simulate(dicts_redundant=False, n_bufferTrain=n_bufferTrain)
                     trans_dict = D.concat_dicts(trans_dicts)
@@ -167,16 +167,16 @@ class singleTrainer(dummyTrainer):
         self.env.cut_dict(trans_dict)
         return trans_dict
     
-    def train(self, n_epoch=10, n_sim=100):
+    def train(self, n_epoch=10, n_episode=100):
         true_values = []
         actor_loss = []
         critic_loss = []
         with Progress() as progress:
-            task = progress.add_task("epoch{0}".format(0), total=n_sim)
+            task = progress.add_task("epoch{0}".format(0), total=n_episode)
             for i in range(n_epoch):
                 progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 progress.tasks[task].completed = 0
-                for _ in range(n_sim):
+                for _ in range(n_episode):
                     trans_dict = self.simulate()
                     al, cl = self.update(trans_dict)
 
