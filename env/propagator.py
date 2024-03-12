@@ -198,14 +198,14 @@ class CWPropagator(motionSystem):
     def randomInitStates(self, num_states: int) -> np.ndarray:
         states = np.zeros((num_states, self.state_dim), dtype=np.float32)
         f1 = self.space_dim
-        f2 = 100*self.space_dim
+        f2 = 1000*self.space_dim
         states[:,:self.space_dim] = np.random.uniform(low=-self.max_dist/f1, high=self.max_dist/f1, size=(num_states,self.space_dim))
         states[:,self.space_dim:] = np.random.uniform(low=-self.max_dist/f2, high=self.max_dist/f2, size=(num_states,self.space_dim))
         return states
     
     def obssNormalize(self, obss: np.ndarray) -> np.ndarray:
         f1 = self.max_dist
-        f2 = self.max_dist/100
+        f2 = self.max_dist/1000
         obss_n = obss.copy()
         obss_n[:,:self.space_dim] /= f1
         obss_n[:,self.space_dim:] /= f2

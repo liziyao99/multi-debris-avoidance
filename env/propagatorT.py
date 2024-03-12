@@ -189,9 +189,21 @@ class CWPropagatorT(motionSystemT):
     def randomInitStates(self, num_states: int):
         states = torch.zeros((num_states, self.state_dim), dtype=torch.float32)
         f1 = self.space_dim
-        f2 = 100*self.space_dim
+        f2 = 1000*self.space_dim
         dist1 = torch.distributions.Uniform(low=-self.max_dist/f1, high=self.max_dist/f1)
         dist2 = torch.distributions.Uniform(low=-self.max_dist/f2, high=self.max_dist/f2)
         states[:,:self.space_dim] = dist1.sample((num_states,self.space_dim))
         states[:,self.space_dim:] = dist2.sample((num_states,self.space_dim))
         return states
+    
+    def obssNormalize(self, obss: torch.Tensor) -> torch.Tensor:
+        f1 = self.max_dist
+        f2 = self.max_dist/1000
+        obss_n = obss.clone()
+        obss_n[:,:self.space_dim] /= f1
+        obss_n[:,self.space_dim:] /= f2
+        return obss_n
+    
+    def getObss(self, states: torch.Tensor) -> torch.Tensor:
+        obss = super().getObss(states)
+        return self.obssNormalize(obss)
