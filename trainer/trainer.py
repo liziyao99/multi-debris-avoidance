@@ -125,12 +125,11 @@ class treeTrainer(dummyTrainer):
             if decide_mode!="determined":
                 sd = self.tree.decide(sd, self.agent, self.env.propagator, decide_mode=decide_mode, t_max=t_max, g_max=g_max)
                 action = sd.action
-            else:
+            else: # determined
                 state = self.testEnv.state.reshape((1,-1))
                 obs = self.propagator.getObss(state)
                 obs = torch.from_numpy(obs).to(self.agent.device)
-                _, action = self.agent.act(obs)
-                action = action.detach().cpu().numpy()
+                action = self.agent.nominal_act(obs).detach().cpu().numpy()
             transit = self.testEnv.step(action)
             done = transit[-1]
             self.testEnv.fill_dict(trans_dict, transit)

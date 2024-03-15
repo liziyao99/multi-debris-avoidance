@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import math
 
 from plotting.dataplot import moving_average
 from agent.agent import rlAgent
@@ -33,9 +34,11 @@ def criticContour(agent:rlAgent, dims=(0,1), span=(-2,2), step=21, singles=0.):
     plt.colorbar()
     plt.show()
 
-def historyFile(trans_dict:dict, agent:rlAgent, stage=-1):
-    fig_num = 5
-    fig, axs = plt.subplots(fig_num, 1, sharex=True, figsize=plt.figaspect(fig_num/2))
+def historyFile(trans_dict:dict, agent:rlAgent, stage=-1, n_debris=0):
+    fig_num = 5+n_debris
+    col = math.ceil(fig_num/5)
+    fig, axs = plt.subplots(5, col, sharex=True, figsize=plt.figaspect(fig_num/(2*col)))
+    axs = axs.flatten()
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 
     # primal position
@@ -68,6 +71,14 @@ def historyFile(trans_dict:dict, agent:rlAgent, stage=-1):
     critic = agent.critic(obss).detach().cpu().numpy()
     axs[4].plot(critic)
     axs[4].set_title("critic")
+
+    for j in range(n_debris):
+        debris_pos = trans_dict["states"][:stage, 6*(j+1):6*(j+1)+3]
+        for i in range(3):
+            axs[5+j].plot(debris_pos[:, i], color=colors[i])
+        d2d = np.linalg.norm(debris_pos-trans_dict["states"][:stage, :3], axis=1)
+        axs[5+j].plot(d2d, color=colors[-1])
+        axs[5+j].set_title(f"debris{j}")
 
     plt.show()
     return fig, axs

@@ -1,5 +1,5 @@
 '''
-    defining classes contain `propagator`s and their `propagatorT` counterparts.
+    defining classes wrapped `propagator`s and their `propagatorT` counterparts.
 '''
 import numpy as np
 import torch
@@ -57,11 +57,11 @@ class dummyPropagatorB:
         '''
         return self.N.randomInitStates(num_states)
     
-    def seqOpt(self, states:torch.Tensor, agent, horizon:int, optStep=True):
+    def seqOpt(self, states:torch.Tensor, agent, horizon:int, optStep=True, **kwargs):
         '''
             self.T.seqOpt(states, agent, horizon, optStep) -> Tensor
         '''
-        return self.T.seqOpt(states, agent, horizon, optStep=True)
+        return self.T.seqOpt(states, agent, horizon, optStep=optStep, **kwargs)
     
     @property
     def state_dim(self):
@@ -94,3 +94,11 @@ class CWPropagatorB(dummyPropagatorB):
                 ) -> None:
         self.N = propagator.CWPropagator(dt=dt, orbit_rad=orbit_rad, max_dist=max_dist)
         self.T = propagatorT.CWPropagatorT(device=device, dt=dt, orbit_rad=orbit_rad, max_dist=max_dist)
+
+class CWDebrisPropagatorB(dummyPropagatorB):
+    def __init__(self,
+                 device:str, n_debris:int,
+                 dt=1., orbit_rad=7e6, max_dist=5e3, safe_dist=5e2,
+                ) -> None:
+        self.N = propagator.CWDebrisPropagator(n_debris=n_debris, dt=dt, orbit_rad=orbit_rad, max_dist=max_dist, safe_dist=safe_dist)
+        self.T = propagatorT.CWDebrisPropagatorT(device=device, n_debris=n_debris, dt=dt, orbit_rad=orbit_rad, max_dist=max_dist, safe_dist=safe_dist)

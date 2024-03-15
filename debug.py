@@ -2,19 +2,43 @@ from trainer.trainer import treeTrainer
 from agent.agent import normalDistAgent
 from env.env import debugTreeEnv
 
+
+import rich.progress
 import numpy as np
 
-def debug1(pop=20):
-    max_gen = 200
-    env = debugTreeEnv(pop, max_gen)
-    agent = normalDistAgent(actor_hiddens=[256]*4, critic_hiddens=[256]*4, actor_lr=1E-4, critic_lr=2E-3)
-    T = treeTrainer(env, agent, gamma=1)
-    T.agent.load("../model/check_point3.ptd")
-    # ds = T.simulate()
-    # _ = T.test(1)
-    T.train(n_epoch=1, n_episode=1)
-    # _ = T.test(t_max=1,)
-    return
+def debug1():
+    from trainer.trainer import treeTrainer
+    from agent.agent import normalDistAgent
+    from env.env import treeEnvB
+    import env.propagatorB as pB
+
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # propB = pB.CWPropagatorB(device="cuda")
+    propB = pB.CWDebrisPropagatorB(device="cuda", n_debris=2)
+
+    pop = 512
+    max_gen = 3600
+    action_bound = 6e-2
+    env = treeEnvB.from_propagator(propB, population=pop, max_gen=max_gen, device="cuda")
+    agent = normalDistAgent(obs_dim=propB.obs_dim, action_dim=propB.action_dim,
+        actor_hiddens=[512]*4, critic_hiddens=[512]*4, 
+        action_lower_bound=-action_bound, action_upper_bound=action_bound, 
+        actor_lr=1E-5, critic_lr=5E-4)
+    T = treeTrainer(env, agent, gamma=0.99)
+    n = 3
+    batch_size = 512
+    horizon = 3600
+    loss_list = []
+    with rich.progress.Progress() as pbar:
+        task = pbar.add_task("sequential optimize", total=n)
+        for _ in range(n):
+            states = T.propagator.T.randomInitStates(batch_size).to(agent.device)
+            loss = T.propagator.seqOpt(states, agent, horizon)
+            loss_list.append(loss.item())
+            pbar.update(task, advance=1)
 
 def debug2():
     from trainer.trainer import singleTrainer
@@ -62,8 +86,4 @@ def debug3():
 
 
 if __name__ == "__main__":
-    from trainer.example import CWTreeTrainer
-    from trainer.mpTrainer import mpTreeTrainer
-
-    mpt = mpTreeTrainer(2, trainerType=CWTreeTrainer)
-    mpt.train(1, 4, folder="../model/")
+    debug1()

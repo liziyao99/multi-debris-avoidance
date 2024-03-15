@@ -1,5 +1,6 @@
 import numpy as np
 from env.dynamic import matrix
+from utils import lineProj
 
 class Propagator:
     def __init__(self, state_dim:int, obs_dim:int, action_dim:int) -> None:
@@ -36,7 +37,7 @@ class Propagator:
         raise NotImplementedError
     
     def obssNormalize(self, obss:np.ndarray) -> np.ndarray:
-        raise obss
+        return obss
     
 
 class linearSystem(Propagator):
@@ -178,9 +179,10 @@ class CWPropagator(motionSystem):
 
     def getRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         batch_size = states.shape[0]
-        iter_step = 3
+        iter_step = 1
         r0, v0 = states[:, :3], states[:, 3:]
-        R, V = np.zeros((iter_step, batch_size, 3), dtype=np.float32), np.zeros((iter_step, batch_size, 3), dtype=np.float32)
+        R = np.zeros((iter_step, batch_size, 3), dtype=np.float32)
+        V = np.zeros((iter_step, batch_size, 3), dtype=np.float32)
         R[0,...] = r0
         V[0,...] = v0
         for i in range(1, iter_step):
@@ -188,7 +190,7 @@ class CWPropagator(motionSystem):
             V[i,...] = V[i-1,...] + actions*self.dt
         rads = np.linalg.norm(R, axis=2)
         mean_rads = np.mean(rads, axis=0)
-        return (self.max_dist-mean_rads)/self.max_dist
+        return (self.max_dist-mean_rads)/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
 
     def getNextStates(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
         con_vec = matrix.CW_constConVecs(0, self.dt, actions, self.orbit_rad)
@@ -205,7 +207,7 @@ class CWPropagator(motionSystem):
     
     def obssNormalize(self, obss: np.ndarray) -> np.ndarray:
         f1 = self.max_dist
-        f2 = self.max_dist/1000
+        f2 = self.max_dist/100
         obss_n = obss.copy()
         obss_n[:,:self.space_dim] /= f1
         obss_n[:,self.space_dim:] /= f2
@@ -214,3 +216,191 @@ class CWPropagator(motionSystem):
     def getObss(self, states: np.ndarray) -> np.ndarray:
         obss = super().getObss(states)
         return self.obssNormalize(obss)
+    
+from env.dynamic import cwutils
+
+class CWDebrisPropagator(Propagator):
+    def __init__(self, n_debris, dt=1., orbit_rad=7e6, max_dist=5e3, safe_dist=5e2) -> None:
+        state_dim = 6*(1+n_debris)+7*n_debris # states of primal and debris, and debris' forecast data
+        obs_dim = 6*(1+n_debris)+7*n_debris # same
+        action_dim = 3 # thrust applied on primal
+        super().__init__(state_dim, obs_dim, action_dim)
+
+        self.state_mat = matrix.CW_TransMat(0, dt, orbit_rad)
+        self.dt = dt
+        self.orbit_rad = orbit_rad
+        self.n_debris = n_debris
+        self.max_dist = max_dist
+        self.safe_dist = safe_dist
+
+        self.k = .01
+        '''
+            parameter of control to reward
+        '''
+        self.kd = 5.
+        '''
+            parameter of `d2p`'s scale to tanh. 
+        '''
+        self.kr = 0.1
+        '''
+            parameter of ratio between `d2o` reward and `d2p` reward.
+        '''
+
+    def statesDecode(self, states:np.ndarray):
+        '''
+            return a dict containing copied data.
+            "primal": state of primal, shape (batch_size, 1, 6).
+            "debris": state of debris, shape (batch_size, n_debris, 6).
+            "forecast_time": time of debris' forecast, shape (batch_size, n_debris, 1).
+            "forecast_pos": position of debris' forecast, shape (batch_size, n_debris, 3).
+            "forecast_vel": velocity of debris' forecast, shape (batch_size, n_debris, 3).
+        '''
+        batch_size = states.shape[0]
+        primal_states = states[:, :6].reshape((batch_size, 1, 6))
+        debris_states = states[:, 6:6*(1+self.n_debris)].reshape((batch_size, self.n_debris, 6))
+        debris_forecast = states[:, 6*(1+self.n_debris):].reshape((batch_size, 7, self.n_debris))
+        debris_forecast = debris_forecast.swapaxes(1, 2)
+        forecast_time = debris_forecast[:, :, 0:1]
+        forecast_pos = debris_forecast[:, :, 1:4]
+        forecast_vel = debris_forecast[:, :, 4:]
+        datas = {
+            "primal": primal_states.copy(),
+            "debris": debris_states.copy(),
+            "forecast_time": forecast_time.copy(),
+            "forecast_pos": forecast_pos.copy(),
+            "forecast_vel": forecast_vel.copy(),
+        }
+        return datas
+    
+    def statesEncode(self, datas:dict):
+        '''
+            `datas`'s keys and items:
+            "primal": state of primal, shape (batch_size, 1, 6).
+            "debris": state of debris, shape (batch_size, n_debris, 6).
+            "forecast_time": time of debris' forecast, shape (batch_size, n_debris, 1).
+            "forecast_pos": position of debris' forecast, shape (batch_size, n_debris, 3).
+            "forecast_vel": velocity of debris' forecast, shape (batch_size, n_debris, 3).
+        '''
+        primal_states = datas["primal"]
+        debris_states = datas["debris"]
+        forecast_time = datas["forecast_time"]
+        forecast_pos = datas["forecast_pos"]
+        forecast_vel = datas["forecast_vel"]
+        states = np.concatenate((primal_states.reshape(-1, 6), 
+                                 debris_states.reshape(-1, 6*self.n_debris),
+                                 forecast_time.reshape(-1, self.n_debris), 
+                                 forecast_pos.reshape(-1, 3*self.n_debris),
+                                 forecast_vel.reshape(-1, 3*self.n_debris)
+                                ), axis=1)
+        return states
+
+    def getObss(self, states:np.ndarray) -> np.ndarray:
+        obss = states.copy()
+        return self.obssNormalize(obss)
+    
+    def getRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
+        d2o, d2d, d2p = self.distances(states)
+        decoded = self.statesDecode(states)
+        forecast_time = decoded["forecast_time"].squeeze(axis=-1)
+        approaching = forecast_time>0
+        n_approaching = np.sum(approaching, axis=1)
+
+        primal_reward = (self.max_dist-d2o)/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
+        debris_reward_each = np.tanh(self.kd*(d2p-self.safe_dist)/self.safe_dist)
+        debris_reward_each = debris_reward_each*approaching
+        debris_reward = np.sum(debris_reward_each, axis=1)
+        rewards = (self.kr*primal_reward+debris_reward)/(self.kr+n_approaching)
+        return rewards
+    
+    def getTruncatedRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+    
+    def getNextStates(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
+        batch_size = states.shape[0]
+        decoded = self.statesDecode(states)
+        object_states = np.concatenate((decoded["primal"], decoded["debris"]), axis=1) # shape: (batch_size, 1+n_debris, 6)
+        next_object_states = object_states@self.state_mat.T
+        con_vec = matrix.CW_constConVecs(0, self.dt, actions, self.orbit_rad)
+        next_object_states[:,0,:] += con_vec
+        decoded["primal"] = next_object_states[:,0,:]
+        decoded["debris"] = next_object_states[:,1:,:]
+        decoded["forecast_time"] -= self.dt
+        next_states = self.statesEncode(decoded)
+        return next_states
+    
+    def getDones(self, states:np.ndarray) -> np.ndarray:
+        d2o, d2d = self.distances(states)
+        out_dist = (d2o>self.max_dist).flatten()
+        collision = np.max(d2d<self.safe_dist, axis=1)
+        dones = out_dist+collision
+        return dones
+    
+    def randomInitStates(self, num_states:int) -> np.ndarray:
+        space_dim = 3
+        f1 = 10*space_dim
+        f2 = 1000*space_dim
+        f3 = 10*space_dim
+        max_time = 3600.
+
+        primal_pos = np.random.uniform(low=-self.max_dist/f1, high=self.max_dist/f1, size=(num_states, 1, space_dim))
+        primal_vel = np.random.uniform(low=-self.max_dist/f2, high=self.max_dist/f2, size=(num_states, 1, space_dim))
+        forecast_pos = np.random.uniform(low=-self.max_dist/f1, high=self.max_dist/f1, size=(num_states, self.n_debris, space_dim))
+        forecast_vel = np.random.uniform(low=-self.max_dist/f3, high=self.max_dist/f3, size=(num_states, self.n_debris, space_dim))
+        forecast_time = np.random.uniform(low=max_time/2, high=max_time, size=(num_states, self.n_debris, 1))
+
+        primal_states = np.concatenate((primal_pos, primal_vel), axis=2)
+        forecast_states = np.concatenate((forecast_pos, forecast_vel), axis=2)
+        debris_states = cwutils.CW_tInv_batch(a = np.array([self.orbit_rad]*(num_states*self.n_debris)), 
+                                                       forecast_states = forecast_states.reshape((num_states*self.n_debris,space_dim*2)), 
+                                                       t2c = forecast_time.flatten())
+        debris_states = debris_states.reshape((num_states, self.n_debris, space_dim*2))
+        states_dict = {
+            "primal": primal_states,
+            "debris": debris_states,
+            "forecast_time": forecast_time,
+            "forecast_pos": forecast_pos,
+            "forecast_vel": forecast_vel
+        }
+        states = self.statesEncode(states_dict)
+        return states
+    
+    def obssNormalize(self, obss:np.ndarray) -> np.ndarray:
+        f1 = self.max_dist
+        f2 = self.max_dist/100
+        states = obss.copy()
+        decoded = self.statesDecode(states) # obss is states
+        primal_pos = decoded["primal"][:, :, :3]
+        debris_pos = decoded["debris"][:, :, :3]
+        primal_vel = decoded["primal"][:, :, 3:]
+        debris_vel = decoded["debris"][:, :, 3:]
+        primal_pos_n = primal_pos/f1
+        debris_pos_n = debris_pos/f1
+        primal_vel_n = primal_vel/f2
+        debris_vel_n = debris_vel/f2
+        decoded["primal"][:, :, :3] = primal_pos_n
+        decoded["debris"][:, :, :3] = debris_pos_n
+        decoded["primal"][:, :, 3:] = primal_vel_n
+        decoded["debris"][:, :, 3:] = debris_vel_n
+        decoded["forecast_pos"] /= f1
+        decoded["forecast_vel"] /= f2
+        states_n = self.statesEncode(decoded)
+        obss_n = states_n.copy()
+        return obss_n
+    
+    def distances(self, states):
+        '''
+            returns:
+                `d2o`: primal's distance to origin.
+                `d2d`: primal's distance to debris.
+                `d2p`: primal's distance to debris' forecast line.
+        '''
+        decoded = self.statesDecode(states)
+        primal_pos = decoded["primal"][:, :, :3]
+        debris_pos = decoded["debris"][:, :, :3]
+        forecast_pos = decoded["forecast_pos"]
+        forecast_vel = decoded["forecast_vel"]
+        d2o = np.linalg.norm(primal_pos, dim=2) # distance to origin
+        d2d = np.linalg.norm(debris_pos-primal_pos, dim=2) # distance to debris
+        primal_proj, primal_orth = lineProj(primal_pos, forecast_pos, forecast_vel)
+        d2p = np.linalg.norm(primal_orth, dim=2) # distance to debris' forecast
+        return d2o, d2d, d2p

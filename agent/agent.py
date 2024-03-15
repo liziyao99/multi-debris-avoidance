@@ -39,6 +39,13 @@ class rlAgent:
         output = self.actor(obs)
         sample = self.actor.sample(output)
         return output, sample
+    
+    def nominal_act(self, obs:torch.Tensor, require_grad=True):
+        '''
+            returns: `output` of actor.
+        '''
+        obs = obs.to(self.device)
+        return self.actor.nominal_output(obs, require_grad=require_grad)
 
     def update(self, trans_dict) -> typing.Tuple[float]:
         '''

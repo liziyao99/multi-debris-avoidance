@@ -126,18 +126,18 @@ class mpTreeTrainer:
         self.agents[idx].actor.load_state_dict(self.main_agent.actor.state_dict())
         self.agents[idx].critic.load_state_dict(self.main_agent.critic.state_dict())
     
-    def train(self, n_epoch:int, total:int, folder="../model/", sim_kwargs:dict=None):
+    def train(self, n_epoch:int, total_episode:int, folder="../model/", sim_kwargs:dict=None):
         if sim_kwargs is not None:
             for w in self.workers: w.sim_kwargs = sim_kwargs
         plot = dataPlot(["total_rewards", "actor_loss", "critic_loss"])
         with rich.progress.Progress() as pbar:
-            task1 = pbar.add_task("", total=total)
+            task1 = pbar.add_task("", total=total_episode)
             actor_loss, critic_loss, total_rewards = [], [], []
             for i in range(n_epoch):
                 pbar.tasks[task1].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 pbar.tasks[task1].completed = 0
                 [self.pull(idx) for idx in range(self.n_process)] # mp agents pull parameters from main agent
-                inq, outq = self.__init_train(total)
+                inq, outq = self.__init_train(total_episode)
                 [w.start() for w in self.workers]
                 count = 0
                 while count<self.n_process: # mp workers running

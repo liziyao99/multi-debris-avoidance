@@ -36,7 +36,7 @@ def CW_StateMat(a:float,
         ])
     return A
 
-@nb.njit
+# @nb.njit
 def CW_TransMat(t0:float,
                 t:float, 
                 a:float, 
@@ -44,7 +44,7 @@ def CW_TransMat(t0:float,
                 ):
     '''
         args:
-            `t`: time, s
+            `t0`, `t`: time, s
             `a`: radius of the target's circular orbit, m
             `mu`: standard gravitational parameter, m3s-2
         return:
@@ -79,6 +79,53 @@ def CW_TransMat(t0:float,
             np.hstack((Phi_rr, Phi_vr)), 
             np.hstack((Phi_rv, Phi_vv))
         )).astype(np.float32)
+    return Phi
+
+def CW_transMat_batch(t0:np.ndarray,
+                      t1:np.ndarray,
+                      a:np.ndarray,
+                      mu:np.ndarray=None):
+    '''
+        all args are of shape (batch_size,). Return array of shape (batch_size, 6, 6), 
+        corresponding to each entry.
+    '''
+    batch_size = t0.shape[0]
+    if mu is None:
+        mu = np.array([MU_EARTH]*batch_size, dtype=np.float64)
+    dt = (t1-t0).astype(np.float64)
+    a = a.astype(np.float64)
+    # NOTE: below have small divide small, use float64 in case loss of accuracy.
+    n = np.sqrt(mu/a**3)
+    tt = n*dt
+    c = cos(tt)
+    s = sin(tt)
+    zero = np.zeros_like(tt)
+    one = np.ones_like(tt)
+    Phi_rr = np.array([
+            [4-3*c, zero, zero],
+            [6*(s-tt), one, zero],
+            [zero, zero, c]
+        ]) # shape (3,3,batch_size)
+    Phi_vr = np.array([
+            [s/n, 2*(1-c)/n, zero],
+            [2*(c-1)/n, (4*s-3*tt)/n, zero],
+            [zero, zero, s/n]
+        ])
+    Phi_rv = np.array([
+            [3*n*s, zero, zero],
+            [6*n*(c-1), zero, zero],
+            [zero, zero, -n*s]
+        ])
+    Phi_vv = np.array([
+            [c, 2*s, zero],
+            [-2*s, 4*c-3, zero],
+            [zero, zero, c]
+        ])
+    Phi = np.vstack((
+            np.hstack((Phi_rr, Phi_vr)),
+            np.hstack((Phi_rv, Phi_vv))
+        )).astype(np.float32) # shape (6, 6, batch_size)
+    Phi = Phi.swapaxes(0,1).swapaxes(0,2) # shape (batch_size, 6, 6)
     return Phi
 
 def CW_constConVec(t0:float,

@@ -53,6 +53,13 @@ class fcNet(nn.Module):
             to be overloaded when network output randomly.
         '''
         raise(NotImplementedError)
+    
+    def nominal_output(self, x, require_grad=True):
+        '''
+            determined output, e.g. mean of distribution.
+            To be overloaded when network output randomly.
+        '''
+        raise(NotImplementedError)
 
 
 class boundedFcNet(fcNet):
@@ -76,6 +83,13 @@ class boundedFcNet(fcNet):
     def post_process(self, x):
         return self.obc(x)
     
+    def clip(self, x:torch.Tensor):
+        '''
+            clip output to output bounds.
+        '''
+        x = x.clamp(self.obc.lower_bounds, self.obc.upper_bounds)
+        return x
+    
 class normalDistNet(boundedFcNet):
     def __init__(self, 
                  n_feature: int, 
@@ -97,6 +111,17 @@ class normalDistNet(boundedFcNet):
     def distribution(self, output):
         dist = torch.distributions.Normal(output[:,:self.n_sample], output[:,self.n_sample:])
         return dist
+    
+    def nominal_output(self, x, require_grad=True):
+        '''
+            mean of normal dist.
+            To be overloaded when network output randomly.
+        '''
+        output = self.forward(x)
+        nominal = output[:,:self.n_sample]
+        if not require_grad:
+            nominal = nominal.detach()
+        return nominal
     
     def clip(self, x:torch.Tensor):
         '''
