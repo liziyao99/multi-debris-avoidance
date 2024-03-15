@@ -237,14 +237,6 @@ class CWDebrisPropagator(Propagator):
         '''
             parameter of control to reward
         '''
-        self.kd = 5.
-        '''
-            parameter of `d2p`'s scale to tanh. 
-        '''
-        self.kr = 0.1
-        '''
-            parameter of ratio between `d2o` reward and `d2p` reward.
-        '''
 
     def statesDecode(self, states:np.ndarray):
         '''
@@ -300,16 +292,22 @@ class CWDebrisPropagator(Propagator):
     
     def getRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         d2o, d2d, d2p = self.distances(states)
+        nd2p = d2p/self.safe_dist
         decoded = self.statesDecode(states)
         forecast_time = decoded["forecast_time"].squeeze(axis=-1)
         approaching = forecast_time>0
         n_approaching = np.sum(approaching, axis=1)
 
-        primal_reward = (self.max_dist-d2o)/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
-        debris_reward_each = np.tanh(self.kd*(d2p-self.safe_dist)/self.safe_dist)
+        primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
+        debris_reward_each = np.log(nd2p)/nd2p
         debris_reward_each = debris_reward_each*approaching
         debris_reward = np.sum(debris_reward_each, axis=1)
-        rewards = (self.kr*primal_reward+debris_reward)/(self.kr+n_approaching)
+        rewards = (primal_reward+debris_reward)/(1+n_approaching)
+        # print(nd2p)
+        # print(primal_reward)
+        # print(debris_reward)
+        # print(rewards)
+        print("\n")
         return rewards
     
     def getTruncatedRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
@@ -329,7 +327,7 @@ class CWDebrisPropagator(Propagator):
         return next_states
     
     def getDones(self, states:np.ndarray) -> np.ndarray:
-        d2o, d2d = self.distances(states)
+        d2o, d2d, _ = self.distances(states)
         out_dist = (d2o>self.max_dist).flatten()
         collision = np.max(d2d<self.safe_dist, axis=1)
         dones = out_dist+collision
@@ -399,8 +397,11 @@ class CWDebrisPropagator(Propagator):
         debris_pos = decoded["debris"][:, :, :3]
         forecast_pos = decoded["forecast_pos"]
         forecast_vel = decoded["forecast_vel"]
-        d2o = np.linalg.norm(primal_pos, dim=2) # distance to origin
-        d2d = np.linalg.norm(debris_pos-primal_pos, dim=2) # distance to debris
+        d2o = np.linalg.norm(primal_pos, axis=2) # distance to origin
+        d2d = np.linalg.norm(debris_pos-primal_pos, axis=2) # distance to debris
+        # print(forecast_pos)
+        # print(forecast_vel)
+        # print("\n")
         primal_proj, primal_orth = lineProj(primal_pos, forecast_pos, forecast_vel)
-        d2p = np.linalg.norm(primal_orth, dim=2) # distance to debris' forecast
+        d2p = np.linalg.norm(primal_orth, axis=-1) # distance to debris' forecast
         return d2o, d2d, d2p

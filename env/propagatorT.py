@@ -231,14 +231,6 @@ class CWDebrisPropagatorT(PropagatorT):
         '''
             parameter of control to reward
         '''
-        self.kd = 5.
-        '''
-            parameter of `d2p`'s scale to tanh. 
-        '''
-        self.kr = 0.1
-        '''
-            parameter of ratio between `d2o` reward and `d2p` reward.
-        '''
 
     def statesDecode(self, states:torch.Tensor):
         '''
@@ -294,16 +286,17 @@ class CWDebrisPropagatorT(PropagatorT):
     
     def getRewards(self, states:torch.Tensor, actions:torch.Tensor) -> torch.Tensor:
         d2o, d2d, d2p = self.distances(states)
+        nd2p = d2p/self.safe_dist
         decoded = self.statesDecode(states)
         forecast_time = decoded["forecast_time"].squeeze(dim=-1)
         approaching = forecast_time>0
         n_approaching = torch.sum(approaching, dim=1)
 
         primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*torch.linalg.norm(actions, dim=1)
-        debris_reward_each = torch.tanh(self.kd*(d2p-self.safe_dist)/self.safe_dist)
+        debris_reward_each = torch.log(nd2p)/nd2p
         debris_reward_each = debris_reward_each*approaching
         debris_reward = torch.sum(debris_reward_each, dim=1)
-        rewards = (self.kr*primal_reward+debris_reward)/(self.kr+n_approaching)
+        rewards = (primal_reward+debris_reward)/(1+n_approaching)
         return rewards
     
     def getTruncatedRewards(self, states:torch.Tensor, actions:torch.Tensor) -> torch.Tensor:

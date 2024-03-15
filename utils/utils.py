@@ -7,9 +7,9 @@ def affine(x, s0, t0, s1, t1):
 def dotEachRow(a, b, keepdim=False):
     prod = a*b
     if type(a) is torch.Tensor:
-        dot = torch.sum(prod, dim=1, keepdim=keepdim)
+        dot = torch.sum(prod, dim=-1, keepdim=keepdim)
     else:
-        dot = np.sum(prod, axis=1, keepdims=keepdim)
+        dot = np.sum(prod, axis=-1, keepdims=keepdim)
     return dot
 
 def lineProj(x, p, v):
@@ -28,13 +28,15 @@ def lineProj(x, p, v):
         p = p[None, :]
         v = v[None, :]
     if type(x) is torch.Tensor:
-        v_norm = torch.norm(v,dim=1,keepdim=True)
+        v_norm = torch.norm(v,dim=-1,keepdim=True)
     else:
-        v_norm = np.linalg.norm(v,axis=1,keepdims=True)
+        v_norm = np.linalg.norm(v,axis=-1,keepdims=True)
     v_unit = v/v_norm
     v_proj = dotEachRow(x-p, v_unit, keepdim=True)
     x_proj = p + v_proj * v_unit
     x_orth = x - x_proj
+    # print(x_orth)
+    # print("\n")
     return x_proj, x_orth
 
 def compute_advantage(gamma, lmd, td_delta:torch.Tensor):
