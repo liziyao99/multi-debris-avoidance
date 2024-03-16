@@ -244,11 +244,10 @@ class CWDebrisPropagatorT(PropagatorT):
         batch_size = states.shape[0]
         primal_states = states[:, :6].reshape((batch_size, 1, 6))
         debris_states = states[:, 6:6*(1+self.n_debris)].reshape((batch_size, self.n_debris, 6))
-        debris_forecast = states[:, 6*(1+self.n_debris):].reshape((batch_size, 7, self.n_debris))
-        debris_forecast = debris_forecast.swapaxes(1, 2)
-        forecast_time = debris_forecast[:, :, 0:1]
-        forecast_pos = debris_forecast[:, :, 1:4]
-        forecast_vel = debris_forecast[:, :, 4:]
+        debris_forecast = states[:, 6*(1+self.n_debris):]
+        forecast_time = debris_forecast[:, :self.n_debris].reshape(batch_size,self.n_debris,1)
+        forecast_pos = debris_forecast[:, self.n_debris:4*self.n_debris].reshape(batch_size,self.n_debris,3)
+        forecast_vel = debris_forecast[:, 4*self.n_debris:].reshape(batch_size,self.n_debris,3)
         datas = {
             "primal": primal_states.clone(),
             "debris": debris_states.clone(),
