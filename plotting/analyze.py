@@ -75,9 +75,10 @@ def historyFile(trans_dict:dict, agent:rlAgent, stage=-1, n_debris=0):
     for j in range(n_debris):
         debris_pos = trans_dict["states"][:stage, 6*(j+1):6*(j+1)+3]
         for i in range(3):
-            axs[5+j].plot(debris_pos[:, i], color=colors[i])
+            axs[5+j].plot(debris_pos[:, i], label=f"r{i}", color=colors[i])
         d2d = np.linalg.norm(debris_pos-trans_dict["states"][:stage, :3], axis=1)
-        axs[5+j].plot(d2d, color=colors[-1])
+        axs[5+j].plot(d2d, label="d2d", color=colors[-1])
+        axs[5+j].legend()
         axs[5+j].set_title(f"debris{j}")
 
     plt.show()

@@ -306,7 +306,7 @@ class CWDebrisPropagator(Propagator):
         # print(primal_reward)
         # print(debris_reward)
         # print(rewards)
-        print("\n")
+        # print("\n")
         return rewards
     
     def getTruncatedRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
