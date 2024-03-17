@@ -69,7 +69,7 @@ def debug2(n_debris, dummy=False):
 
 
 if __name__ == "__main__":
-    d, end = debug2(2,False)
+    d, end = debug2(1,False)
     plt.close("all")
     plt.plot(d["rewards"][:end])
     plt.show()

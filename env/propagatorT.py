@@ -219,8 +219,10 @@ class CWDebrisPropagatorT(PropagatorT):
         action_dim = 3 # thrust applied on primal
         super().__init__(state_dim, obs_dim, action_dim, device)
 
-        state_mat = matrix.CW_TransMat(0, dt, orbit_rad)
-        self.state_mat = torch.from_numpy(state_mat).float().to(device)
+        trans_mat = matrix.CW_TransMat(0, dt, orbit_rad)
+        self.trans_mat = torch.from_numpy(trans_mat).float().to(device)
+        state_dim = matrix.CW_StateMat(orbit_rad)
+        self.state_mat = torch.from_numpy(state_dim).float().to(device)
         self.dt = dt
         self.orbit_rad = orbit_rad
         self.n_debris = n_debris
@@ -292,7 +294,8 @@ class CWDebrisPropagatorT(PropagatorT):
         n_approaching = torch.sum(approaching, dim=1)
 
         primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*torch.linalg.norm(actions, dim=1)
-        debris_reward_each = torch.log(nd2p)/nd2p
+        # debris_reward_each = torch.log(nd2p)/nd2p
+        debris_reward_each = -2*torch.relu(1-nd2p)
         debris_reward_each = debris_reward_each*approaching
         debris_reward = torch.sum(debris_reward_each, dim=1)
         rewards = (primal_reward+debris_reward)/(1+n_approaching)
@@ -305,7 +308,7 @@ class CWDebrisPropagatorT(PropagatorT):
         batch_size = states.shape[0]
         decoded = self.statesDecode(states)
         object_states = torch.concatenate((decoded["primal"], decoded["debris"]), dim=1) # shape: (batch_size, 1+n_debris, 6)
-        next_object_states = object_states@self.state_mat.T
+        next_object_states = object_states@self.trans_mat.T
         con_vec = matrix.CW_constConVecsT(0, self.dt, actions, self.orbit_rad)
         next_object_states[:,0,:] += con_vec
         decoded["primal"] = next_object_states[:,0,:]

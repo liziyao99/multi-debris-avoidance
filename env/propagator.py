@@ -226,7 +226,8 @@ class CWDebrisPropagator(Propagator):
         action_dim = 3 # thrust applied on primal
         super().__init__(state_dim, obs_dim, action_dim)
 
-        self.state_mat = matrix.CW_TransMat(0, dt, orbit_rad)
+        self.trans_mat = matrix.CW_TransMat(0, dt, orbit_rad)
+        self.state_mat = matrix.CW_StateMat(orbit_rad)
         self.dt = dt
         self.orbit_rad = orbit_rad
         self.n_debris = n_debris
@@ -298,7 +299,8 @@ class CWDebrisPropagator(Propagator):
         n_approaching = np.sum(approaching, axis=1)
 
         primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
-        debris_reward_each = np.log(nd2p)/nd2p
+        # debris_reward_each = np.log(nd2p)/nd2p
+        debris_reward_each = -np.where((1-nd2p)>0, 2*(1-nd2p), 0)
         debris_reward_each = debris_reward_each*approaching
         debris_reward = np.sum(debris_reward_each, axis=1)
         rewards = (primal_reward+debris_reward)/(1+n_approaching)
@@ -316,7 +318,7 @@ class CWDebrisPropagator(Propagator):
         batch_size = states.shape[0]
         decoded = self.statesDecode(states)
         object_states = np.concatenate((decoded["primal"], decoded["debris"]), axis=1) # shape: (batch_size, 1+n_debris, 6)
-        next_object_states = object_states@self.state_mat.T
+        next_object_states = object_states@self.trans_mat.T
         con_vec = matrix.CW_constConVecs(0, self.dt, actions, self.orbit_rad)
         next_object_states[:,0,:] += con_vec
         decoded["primal"] = next_object_states[:,0,:]
