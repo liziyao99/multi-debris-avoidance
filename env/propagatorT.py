@@ -48,7 +48,7 @@ class PropagatorT(Propagator):
     def obssNormalize(self, obss:torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
     
-    def seqOpt(self, states:torch.Tensor, agent, horizon:int, optStep=True, smooth=False, smooth_k=0.01):
+    def seqOpt(self, states:torch.Tensor, agent, horizon:int, totalOptStep=True, smooth=False, smooth_k=0.01):
         '''
             sequence optimization target function, total reward to be maximized, 
             available when reward is contiunous function of state and action.\n
@@ -81,7 +81,7 @@ class PropagatorT(Propagator):
         reward_total = torch.mean(torch.stack(reward_seq))
         delta_u_total = torch.mean(torch.stack(delta_u_seq)) if smooth else 0.
         loss = -reward_total + delta_u_total
-        if optStep:
+        if totalOptStep:
             agent.actor_opt.zero_grad()
             loss.backward()
             agent.actor_opt.step()
@@ -287,17 +287,27 @@ class CWDebrisPropagatorT(PropagatorT):
     
     def getRewards(self, states:torch.Tensor, actions:torch.Tensor) -> torch.Tensor:
         d2o, d2d, d2p = self.distances(states)
-        nd2p = d2p/self.safe_dist
+        # nd2p = d2p/self.safe_dist
         decoded = self.statesDecode(states)
         forecast_time = decoded["forecast_time"].squeeze(dim=-1)
+        primal_pos = decoded["primal"][:,:,:3]
         approaching = forecast_time>0
         n_approaching = torch.sum(approaching, dim=1)
 
-        primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*torch.linalg.norm(actions, dim=1)
-        # debris_reward_each = torch.log(nd2p)/nd2p
-        debris_reward_each = -2*torch.relu(1-nd2p)
+        forecast_states = torch.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),dim=-1)
+        forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
+        n_acc = forecast_acc/torch.norm(forecast_acc, dim=-1, keepdim=True)
+        b = decoded["forecast_pos"]-self.safe_dist*n_acc
+        debris_reward_each = -torch.sum((primal_pos-b)*n_acc/self.max_dist, dim=-1) # shape (batch_size, n_debris)
+        debris_reward_each = torch.clamp(debris_reward_each, max=0)
         debris_reward_each = debris_reward_each*approaching
         debris_reward = torch.sum(debris_reward_each, dim=1)
+
+        primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*torch.linalg.norm(actions, dim=1)
+        # debris_reward_each = torch.log(nd2p)/nd2p
+        # debris_reward_each = -torch.where((1-nd2p)>0, 2*(1-nd2p), 0.1*(1-nd2p)/self.n_debris)
+        # debris_reward_each = debris_reward_each*approaching
+        # debris_reward = torch.sum(debris_reward_each, dim=1)
         rewards = (primal_reward+debris_reward)/(1+n_approaching)
         return rewards
     
@@ -335,7 +345,7 @@ class CWDebrisPropagatorT(PropagatorT):
         primal_vel_dist = torch.distributions.Uniform(low=-self.max_dist/f2, high=self.max_dist/f2)
         forecast_pos_dist = torch.distributions.Uniform(low=-self.max_dist/f1, high=self.max_dist/f1)
         forecast_vel_dist = torch.distributions.Uniform(low=-self.max_dist/f3, high=self.max_dist/f3)
-        forecast_time_dist = torch.distributions.Uniform(low=max_time/2, high=max_time)
+        forecast_time_dist = torch.distributions.Uniform(low=max_time/3, high=2*max_time/3)
 
         primal_pos = primal_pos_dist.sample((num_states, 1, space_dim)).to(self.device)
         primal_vel = primal_vel_dist.sample((num_states, 1, space_dim)).to(self.device)
@@ -361,27 +371,27 @@ class CWDebrisPropagatorT(PropagatorT):
         return states
     
     def obssNormalize(self, obss:torch.Tensor) -> torch.Tensor:
-        f1 = self.max_dist
-        f2 = self.max_dist/100
-        states = obss.clone()
-        decoded = self.statesDecode(states) # obss is states
-        primal_pos = decoded["primal"][:, :, :3]
-        debris_pos = decoded["debris"][:, :, :3]
-        primal_vel = decoded["primal"][:, :, 3:]
-        debris_vel = decoded["debris"][:, :, 3:]
-        primal_pos_n = primal_pos/f1
-        debris_pos_n = debris_pos/f1
-        primal_vel_n = primal_vel/f2
-        debris_vel_n = debris_vel/f2
-        decoded["primal"][:, :, :3] = primal_pos_n
-        decoded["debris"][:, :, :3] = debris_pos_n
-        decoded["primal"][:, :, 3:] = primal_vel_n
-        decoded["debris"][:, :, 3:] = debris_vel_n
-        decoded["forecast_pos"] /= f1
-        decoded["forecast_vel"] /= f2
-        states_n = self.statesEncode(decoded)
-        obss_n = states_n.clone()
-        return obss_n
+        # 1 = self.max_dist
+        # 2 = self.max_dist/100
+        # tates = obss.clone()
+        # ecoded = self.statesDecode(states) # obss is states
+        # rimal_pos = decoded["primal"][:, :, :3]
+        # ebris_pos = decoded["debris"][:, :, :3]
+        # rimal_vel = decoded["primal"][:, :, 3:]
+        # ebris_vel = decoded["debris"][:, :, 3:]
+        # rimal_pos_n = primal_pos/f1
+        # ebris_pos_n = debris_pos/f1
+        # rimal_vel_n = primal_vel/f2
+        # ebris_vel_n = debris_vel/f2
+        # ecoded["primal"][:, :, :3] = primal_pos_n
+        # ecoded["debris"][:, :, :3] = debris_pos_n
+        # ecoded["primal"][:, :, 3:] = primal_vel_n
+        # ecoded["debris"][:, :, 3:] = debris_vel_n
+        # ecoded["forecast_pos"] /= f1
+        # ecoded["forecast_vel"] /= f2
+        # tates_n = self.statesEncode(decoded)
+        # bss_n = states_n.clone()
+        return obss
     
     def distances(self, states):
         '''

@@ -38,7 +38,8 @@ def historyFile(trans_dict:dict, agent:rlAgent, stage=-1, n_debris=0):
     fig_num = 5+n_debris
     col = math.ceil(fig_num/5)
     fig, axs = plt.subplots(5, col, sharex=True, figsize=plt.figaspect(fig_num/(2*col)))
-    axs = axs.flatten()
+    if col>1:
+        axs = axs.swapaxes(0,1).flatten()
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 
     # primal position

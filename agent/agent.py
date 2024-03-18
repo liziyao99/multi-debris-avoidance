@@ -218,3 +218,23 @@ class PPOClipAgent(boundedRlAgent):
             self.critic_opt.step()
 
         return actor_loss.item(), critic_loss.item()
+    
+
+class trackAgent(boundedRlAgent):
+    def __init__(self, 
+                 state_dim: int,
+                 obs_dim: int, 
+                 control_dim: int,
+                 state_weights: torch.Tensor,
+                 control_weights: torch.Tensor,
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 tracker_hiddens: typing.List[int] = [128] * 5,
+                 critic_hiddens: typing.List[int] = [128] * 5, 
+                 action_upper_bounds=None, action_lower_bounds=None, 
+                 actor_lr=0.00001, critic_lr=0.0001, device=None
+                ) -> None:
+        action_dim = state_dim
+        super().__init__(obs_dim, action_dim, actor_hiddens, critic_hiddens, actor_lr=actor_lr, critic_lr=critic_lr, device=device)
+
+        self.tracker = trackNet(state_dim, control_dim, tracker_hiddens, )
+        # TODO

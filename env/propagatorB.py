@@ -57,11 +57,11 @@ class dummyPropagatorB:
         '''
         return self.N.randomInitStates(num_states)
     
-    def seqOpt(self, states:torch.Tensor, agent, horizon:int, optStep=True, **kwargs):
+    def seqOpt(self, states:torch.Tensor, agent, horizon:int, totalOptStep=True, **kwargs):
         '''
             self.T.seqOpt(states, agent, horizon, optStep) -> Tensor
         '''
-        return self.T.seqOpt(states, agent, horizon, optStep=optStep, **kwargs)
+        return self.T.seqOpt(states, agent, horizon, totalOptStep=totalOptStep, **kwargs)
     
     @property
     def state_dim(self):

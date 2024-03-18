@@ -292,23 +292,28 @@ class CWDebrisPropagator(Propagator):
     
     def getRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
         d2o, d2d, d2p = self.distances(states)
-        nd2p = d2p/self.safe_dist
+        # nd2p = d2p/self.safe_dist
         decoded = self.statesDecode(states)
         forecast_time = decoded["forecast_time"].squeeze(axis=-1)
+        primal_pos = decoded["primal"][:,:,:3]
         approaching = forecast_time>0
         n_approaching = np.sum(approaching, axis=1)
 
-        primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
-        # debris_reward_each = np.log(nd2p)/nd2p
-        debris_reward_each = -np.where((1-nd2p)>0, 2*(1-nd2p), 0)
+        forecast_states = np.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),axis=-1)
+        forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
+        n_acc = forecast_acc/np.linalg.norm(forecast_acc, axis=-1, keepdims=True)
+        b = decoded["forecast_pos"]-self.safe_dist*n_acc
+        debris_reward_each = -np.sum((primal_pos-b)*n_acc/self.max_dist, axis=-1) # shape (batch_size, n_debris)
+        debris_reward_each = np.clip(debris_reward_each, a_max=0, a_min=-np.inf)
         debris_reward_each = debris_reward_each*approaching
         debris_reward = np.sum(debris_reward_each, axis=1)
+
+        primal_reward = (self.max_dist-d2o.flatten())/self.max_dist - self.k*np.linalg.norm(actions, axis=1)
+        # debris_reward_each = np.log(nd2p)/nd2p
+        # debris_reward_each = -np.where((1-nd2p)>0, 2*(1-nd2p), 0.1*(1-nd2p)/self.n_debris)
+        # debris_reward_each = debris_reward_each*approaching
+        # debris_reward = np.sum(debris_reward_each, axis=1)
         rewards = (primal_reward+debris_reward)/(1+n_approaching)
-        # print(nd2p)
-        # print(primal_reward)
-        # print(debris_reward)
-        # print(rewards)
-        # print("\n")
         return rewards
     
     def getTruncatedRewards(self, states:np.ndarray, actions:np.ndarray) -> np.ndarray:
@@ -345,7 +350,7 @@ class CWDebrisPropagator(Propagator):
         primal_vel = np.random.uniform(low=-self.max_dist/f2, high=self.max_dist/f2, size=(num_states, 1, space_dim))
         forecast_pos = np.random.uniform(low=-self.max_dist/f1, high=self.max_dist/f1, size=(num_states, self.n_debris, space_dim))
         forecast_vel = np.random.uniform(low=-self.max_dist/f3, high=self.max_dist/f3, size=(num_states, self.n_debris, space_dim))
-        forecast_time = np.random.uniform(low=max_time/2, high=max_time, size=(num_states, self.n_debris, 1))
+        forecast_time = np.random.uniform(low=max_time/3, high=2*max_time/3, size=(num_states, self.n_debris, 1))
 
         primal_states = np.concatenate((primal_pos, primal_vel), axis=2)
         forecast_states = np.concatenate((forecast_pos, forecast_vel), axis=2)
@@ -364,27 +369,27 @@ class CWDebrisPropagator(Propagator):
         return states
     
     def obssNormalize(self, obss:np.ndarray) -> np.ndarray:
-        f1 = self.max_dist
-        f2 = self.max_dist/100
-        states = obss.copy()
-        decoded = self.statesDecode(states) # obss is states
-        primal_pos = decoded["primal"][:, :, :3]
-        debris_pos = decoded["debris"][:, :, :3]
-        primal_vel = decoded["primal"][:, :, 3:]
-        debris_vel = decoded["debris"][:, :, 3:]
-        primal_pos_n = primal_pos/f1
-        debris_pos_n = debris_pos/f1
-        primal_vel_n = primal_vel/f2
-        debris_vel_n = debris_vel/f2
-        decoded["primal"][:, :, :3] = primal_pos_n
-        decoded["debris"][:, :, :3] = debris_pos_n
-        decoded["primal"][:, :, 3:] = primal_vel_n
-        decoded["debris"][:, :, 3:] = debris_vel_n
-        decoded["forecast_pos"] /= f1
-        decoded["forecast_vel"] /= f2
-        states_n = self.statesEncode(decoded)
-        obss_n = states_n.copy()
-        return obss_n
+        # f1 = self.max_dist
+        # f2 = self.max_dist/100
+        # states = obss.copy()
+        # decoded = self.statesDecode(states) # obss is states
+        # primal_pos = decoded["primal"][:, :, :3]
+        # debris_pos = decoded["debris"][:, :, :3]
+        # primal_vel = decoded["primal"][:, :, 3:]
+        # debris_vel = decoded["debris"][:, :, 3:]
+        # primal_pos_n = primal_pos/f1
+        # debris_pos_n = debris_pos/f1
+        # primal_vel_n = primal_vel/f2
+        # debris_vel_n = debris_vel/f2
+        # decoded["primal"][:, :, :3] = primal_pos_n
+        # decoded["debris"][:, :, :3] = debris_pos_n
+        # decoded["primal"][:, :, 3:] = primal_vel_n
+        # decoded["debris"][:, :, 3:] = debris_vel_n
+        # decoded["forecast_pos"] /= f1
+        # decoded["forecast_vel"] /= f2
+        # states_n = self.statesEncode(decoded)
+        # obss_n = states_n.copy()
+        return obss
     
     def distances(self, states):
         '''

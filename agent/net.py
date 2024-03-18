@@ -129,3 +129,38 @@ class normalDistNet(boundedFcNet):
         '''
         x = x.clamp(self.obc.lower_bounds[:self.n_sample], self.obc.upper_bounds[:self.n_sample])
         return x
+    
+
+class trackNet(boundedFcNet):
+    def __init__(self, 
+                 n_state: int,
+                 n_control: int, 
+                 n_hiddens: torch.List[int], 
+                 state_weights: torch.Tensor, 
+                 control_weights: torch.Tensor,
+                 upper_bounds: torch.Tensor, 
+                 lower_bounds: torch.Tensor):
+        super().__init__(n_state*2, n_control, n_hiddens, upper_bounds, lower_bounds)
+        self.n_state = n_state
+        self.state_weights = torch.diag(state_weights)
+        self.control_weights = torch.diag(control_weights)
+
+    def to(self, device:str, **kwargs):
+        self.state_weights = self.state_weights.to(device=device)
+        self.control_weights = self.control_weights.to(device=device)
+        return super().to(device=device, **kwargs)
+
+    def loss(self, state_seq:torch.Tensor, track_seq:torch.Tensor):
+        '''
+            args:
+                `state_seq`: shape (horizon,batch_size,n_state), must be propagated by `propagatorT` and contain grad.
+                `track_seq`: shape (horizon,batch_size,n_state).
+        '''
+        track_seq = track_seq.detach()
+        x = torch.concat((state_seq,track_seq), dim=-1)
+        error_seq = state_seq-track_seq # shape (horizon,batch_size,n_state)
+        control_seq = self.forward(x) # shape (horizon,batch_size,n_control)
+        state_loss = torch.sum((error_seq@self.state_weights)*error_seq, dim=(0,-1)) # shape (batch_size,)
+        control_loss = torch.sum((control_seq@self.control_weights)*control_seq, dim=(0,-1)) # shape (batch_size,)
+        total_loss = torch.mean(state_loss+control_loss)
+        return total_loss
