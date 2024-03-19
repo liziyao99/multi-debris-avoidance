@@ -388,7 +388,7 @@ class CWDebrisPropagator(Propagator):
         # decoded["forecast_pos"] /= f1
         # decoded["forecast_vel"] /= f2
         # states_n = self.statesEncode(decoded)
-        # obss_n = states_n.copy()
+        # obss_n = states_n
         return obss
     
     def distances(self, states):

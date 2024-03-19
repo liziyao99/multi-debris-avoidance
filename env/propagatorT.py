@@ -87,6 +87,29 @@ class PropagatorT(Propagator):
             agent.actor_opt.step()
         return loss
     
+    def seqTrack(self, states:torch.Tensor, targets_seq:torch.Tensor, tracker) -> torch.Tensor:
+        '''
+            args:
+                `states`: shape (batch_size,state_dim)
+                `targets_seq`: shape (horizon,batch_size,state_dim)
+                `tracker`: see `trackNet`.
+        '''
+        batch_size = states.shape[0]
+        horizon = targets_seq.shape[0]
+        states_seq = []
+        for i in range(horizon):
+            states_seq.append(states)
+            obss = self.getObss(states)
+            targets = targets_seq[i].detach()
+            obss_t = self.getObss(targets)
+            tracker_input = torch.hstack((obss,obss_t))
+            actions = tracker(tracker_input)
+            states, _, _, _ = self.propagate(states, actions)
+        states_seq = torch.stack(states_seq)
+        loss = tracker.loss(states_seq, targets_seq)
+        return loss
+
+    
 class linearSystemT(PropagatorT):
     def __init__(self,
                  state_mat:torch.Tensor, 
@@ -371,26 +394,26 @@ class CWDebrisPropagatorT(PropagatorT):
         return states
     
     def obssNormalize(self, obss:torch.Tensor) -> torch.Tensor:
-        # 1 = self.max_dist
-        # 2 = self.max_dist/100
-        # tates = obss.clone()
-        # ecoded = self.statesDecode(states) # obss is states
-        # rimal_pos = decoded["primal"][:, :, :3]
-        # ebris_pos = decoded["debris"][:, :, :3]
-        # rimal_vel = decoded["primal"][:, :, 3:]
-        # ebris_vel = decoded["debris"][:, :, 3:]
-        # rimal_pos_n = primal_pos/f1
-        # ebris_pos_n = debris_pos/f1
-        # rimal_vel_n = primal_vel/f2
-        # ebris_vel_n = debris_vel/f2
-        # ecoded["primal"][:, :, :3] = primal_pos_n
-        # ecoded["debris"][:, :, :3] = debris_pos_n
-        # ecoded["primal"][:, :, 3:] = primal_vel_n
-        # ecoded["debris"][:, :, 3:] = debris_vel_n
-        # ecoded["forecast_pos"] /= f1
-        # ecoded["forecast_vel"] /= f2
-        # tates_n = self.statesEncode(decoded)
-        # bss_n = states_n.clone()
+        # f1 = self.max_dist
+        # f2 = self.max_dist/100
+        # states = obss.clone()
+        # decoded = self.statesDecode(states) # obss is states
+        # primal_pos = decoded["primal"][:, :, :3]
+        # debris_pos = decoded["debris"][:, :, :3]
+        # primal_vel = decoded["primal"][:, :, 3:]
+        # debris_vel = decoded["debris"][:, :, 3:]
+        # primal_pos_n = primal_pos/f1
+        # debris_pos_n = debris_pos/f1
+        # primal_vel_n = primal_vel/f2
+        # debris_vel_n = debris_vel/f2
+        # decoded["primal"][:, :, :3] = primal_pos_n
+        # decoded["debris"][:, :, :3] = debris_pos_n
+        # decoded["primal"][:, :, 3:] = primal_vel_n
+        # decoded["debris"][:, :, 3:] = debris_vel_n
+        # decoded["forecast_pos"] /= f1
+        # decoded["forecast_vel"] /= f2
+        # states_n = self.statesEncode(decoded)
+        # obss_n = states_n
         return obss
     
     def distances(self, states):
