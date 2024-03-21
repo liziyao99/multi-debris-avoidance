@@ -164,3 +164,28 @@ class trackNet(boundedFcNet):
         control_loss = torch.sum((control_seq@self.control_weights)*control_seq, dim=(0,-1)) # shape (batch_size,)
         total_loss = torch.mean(state_loss+control_loss)
         return total_loss
+
+class QNet(fcNet):
+    def __init__(self, 
+                 n_obs:int, 
+                 n_action:int,
+                 n_hiddens:typing.List[int], 
+                 ):
+        super(fcNet, self).__init__()
+        self.n_obs = n_obs
+        self.n_action = n_action
+        self.n_feature = n_obs+n_action
+        self.n_output = 1
+        self.__dummy_param = nn.Parameter(torch.empty(0))
+        
+        fc = []
+        for i in range(len(n_hiddens)):
+            fc.append(nn.Linear(self.n_feature if i == 0 else n_hiddens[i-1], n_hiddens[i]))
+            fc.append(nn.ReLU())
+        fc.append(nn.Linear(n_hiddens[-1], 1))
+        self.fc_layers = nn.Sequential(*fc)
+
+    def forward(self, obs, action):
+        x = torch.cat((obs, action), dim=-1)
+        fc_out = self.fc_layers(x)
+        return self.post_process(fc_out)

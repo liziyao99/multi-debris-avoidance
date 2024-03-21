@@ -220,21 +220,161 @@ class PPOClipAgent(boundedRlAgent):
         return actor_loss.item(), critic_loss.item()
     
 
-class trackAgent(boundedRlAgent):
+class planTrackAgent(boundedRlAgent):
     def __init__(self, 
-                 state_dim: int,
                  obs_dim: int, 
+                 plan_dim: int,
                  control_dim: int,
-                 state_weights: torch.Tensor,
-                 control_weights: torch.Tensor,
+                 pad_dim=0,
+                 state_weights: torch.Tensor=None,
+                 control_weights: torch.Tensor=None,
                  actor_hiddens: typing.List[int] = [128] * 5, 
                  tracker_hiddens: typing.List[int] = [128] * 5,
                  critic_hiddens: typing.List[int] = [128] * 5, 
-                 action_upper_bounds=None, action_lower_bounds=None, 
-                 actor_lr=0.00001, critic_lr=0.0001, device=None
+                 plan_upper_bounds:torch.Tensor=None,
+                 plan_lower_bounds:torch.Tensor=None,
+                 control_upper_bounds:torch.Tensor=None, 
+                 control_lower_bounds:torch.Tensor=None, 
+                 actor_lr=1e-5, 
+                 critic_lr=1e-4, 
+                 tracker_lr=1e-4, 
+                 device=None
                 ) -> None:
-        action_dim = state_dim
-        super().__init__(obs_dim, action_dim, actor_hiddens, critic_hiddens, actor_lr=actor_lr, critic_lr=critic_lr, device=device)
+        self.obs_dim = obs_dim
+        self.plan_dim = plan_dim
+        self.control_dim = control_dim
+        self.pad_dim = pad_dim
+        self.track_dim = plan_dim+pad_dim
 
-        self.tracker = trackNet(state_dim, control_dim, tracker_hiddens, )
-        # TODO
+        self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+
+        if state_weights is None:
+            state_weights = torch.tensor([1.]*self.track_dim, device=self.device)
+        if control_weights is None:
+            control_weights = torch.tensor([0.01]*control_dim, device=self.device)
+
+        if control_upper_bounds is None:
+            control_upper_bounds = [torch.inf]*control_dim
+        if control_lower_bounds is None:
+            control_lower_bounds = [-torch.inf]*control_dim
+        if plan_upper_bounds is None:
+            plan_upper_bounds = [torch.inf]*plan_dim
+        if plan_lower_bounds is None:
+            plan_lower_bounds = [-torch.inf]*plan_dim
+        
+        self._init_actor(actor_hiddens, plan_upper_bounds, plan_lower_bounds, actor_lr)
+        self._init_critic(critic_hiddens, critic_lr)
+        self._init_tracker(tracker_hiddens, state_weights, control_weights, control_upper_bounds, control_lower_bounds, tracker_lr)
+
+    def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
+        self.actor = boundedFcNet(self.obs_dim, self.plan_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
+        '''
+            input obs and output plan (target state), calling `planer` is more appreciated.
+        '''
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+
+    def _init_critic(self, hiddens, lr):
+        self.critic = QNet(self.obs_dim, self.plan_dim, hiddens).to(self.device)
+        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
+    
+    def _init_tracker(self, hiddens, state_weights, control_weights, upper_bounds, lower_bounds, lr):
+        self.tracker = trackNet(self.track_dim, self.control_dim, hiddens, state_weights, control_weights, upper_bounds, lower_bounds).to(self.device)
+        self.tracker_opt = torch.optim.Adam(self.tracker.parameters(), lr=lr)
+
+    def explore(self, size:int):
+        output = self.actor.obc.uniSample(size).to(self.device)
+        sample = self.actor.sample(output)
+        return output, sample
+
+    def extract_primal_obs(self, obss:torch.Tensor):
+        return obss[:, :self.track_dim]
+    
+    def extract_primal_state(self, states:torch.Tensor):
+        return states[:, :self.track_dim]
+    
+    @property
+    def planer(self):
+        '''
+            wrapped `actor`.
+            Input obs and output plan (target state to be tracked).
+        '''
+        return self.actor
+    
+    @property
+    def planer_opt(self):
+        return self.actor_opt
+    
+    @property
+    def Q(self):
+        '''
+            wrapped `critic`.
+            Input (obs, action) and output Q value.
+        '''
+        return self.critic
+    
+    @property
+    def Q_opt(self):
+        return self.critic_opt
+
+    def act(self, obs:torch.Tensor, primal_states:torch.Tensor):
+        '''
+            returns:
+                `target_states`: observation of state to be tracked.
+                `control`: control to be applied.
+        '''
+        obs = obs.to(self.device)
+        target_states, _ = self.track_target(obs)
+        tracker_input = torch.hstack((primal_states, target_states))
+        control = self.tracker(tracker_input)
+        return target_states, control
+    
+    def act_target(self, target_states:torch.Tensor, primal_states:torch.Tensor):
+        tracker_input = torch.hstack((primal_states, target_states))
+        control = self.tracker(tracker_input)
+        return target_states, control
+    
+    def track_target(self, obs:torch.Tensor):
+        '''
+            returns: `target_states` and `planed_states`.
+        '''
+        obs = obs.to(self.device)
+        planed_states = self.planer(obs)
+        pad_zeros = torch.zeros((obs.shape[0], self.pad_dim), device=self.device)
+        target_states = torch.hstack((planed_states, pad_zeros))
+        return target_states, planed_states
+    
+    def random_track_target(self, batch_size):
+        '''
+            returns: `target_states` and `planed_states`.
+        '''
+        planed_states = self.planer.obc.uniSample(batch_size).to(self.device)
+        pad_zeros = torch.zeros((batch_size, self.pad_dim), device=self.device)
+        target_states = torch.hstack((planed_states, pad_zeros))
+        return target_states, planed_states
+    
+    def nominal_act(self, obs:torch.Tensor, require_grad=True):
+        '''
+            returns: `output` of actor.
+        '''
+        obs = obs.to(self.device)
+        return self.actor.nominal_output(obs, require_grad=require_grad)
+    
+    def save(self, path="../model/dicts.ptd"):
+        dicts = {
+                "p_net": self.actor.state_dict(),
+                "v_net": self.critic.state_dict(),
+                "p_opt": self.actor_opt.state_dict(),
+                "v_opt": self.critic_opt.state_dict(),
+                "tracker": self.tracker.state_dict(),
+                "tracker_opt": self.tracker_opt.state_dict()
+            }
+        torch.save(dicts, path)
+
+    def load(self, path="../model/dicts.ptd"):
+        dicts = torch.load(path)
+        self.actor.load_state_dict(dicts["p_net"])
+        self.critic.load_state_dict(dicts["v_net"])
+        self.actor_opt.load_state_dict(dicts["p_opt"])
+        self.critic_opt.load_state_dict(dicts["v_opt"])
+        self.tracker.load_state_dict(dicts["tracker"])
+        self.tracker_opt.load_state_dict(dicts["tracker_opt"])

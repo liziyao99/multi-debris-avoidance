@@ -37,7 +37,16 @@ class Propagator:
         raise NotImplementedError
     
     def obssNormalize(self, obss:np.ndarray) -> np.ndarray:
-        return obss
+        raise NotImplementedError
+    
+    def obssDenormalize(self, obss:np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+    
+    def statesDecode(self, states:np.ndarray):
+        raise NotImplementedError
+    
+    def statesEncode(self, datas:dict):
+        raise NotImplementedError
     
 
 class linearSystem(Propagator):
@@ -411,3 +420,57 @@ class CWDebrisPropagator(Propagator):
         primal_proj, primal_orth = lineProj(primal_pos, forecast_pos, forecast_vel)
         d2p = np.linalg.norm(primal_orth, axis=-1) # distance to debris' forecast
         return d2o, d2d, d2p
+
+
+class CWPlanTrackPropagator(CWDebrisPropagator):
+    def __init__(self, 
+                 n_debris, 
+                 dt=1, 
+                 orbit_rad=7000000, 
+                 max_dist=5000, 
+                 safe_dist=500
+                ) -> None:
+        super().__init__(n_debris, dt, orbit_rad, max_dist, safe_dist)
+        self.obs_dim = 6+self.n_debris*7 # primal state and forecast data, no debris' state
+
+    def getPlanRewards(self, states:np.ndarray, target:np.ndarray):
+        batch_size = states.shape[0]
+        target = target.reshape((batch_size,1,-1))
+        target_pos = target[:, :, :3]
+        decoded = self.statesDecode(states)
+        primal_pos = decoded["primal"][:,:,:3]
+
+        forecast_states = np.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),axis=-1)
+        forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
+        n_acc = forecast_acc/np.linalg.norm(forecast_acc, axis=-1, keepdims=True)
+        n_vel = decoded["forecast_vel"]/np.linalg.norm(decoded["forecast_vel"], axis=-1, keepdims=True)
+        normal_vec = np.cross(n_vel, n_acc, axis=-1)
+        normal_vec = normal_vec/np.linalg.norm(normal_vec, axis=-1, keepdims=True)
+
+        dot_lateral = np.sum((target_pos-decoded["forecast_pos"])*(-n_acc), axis=-1) # negative dot product of relative position and debris' acceleration
+        dist_lateral = dot_lateral-self.safe_dist
+        dot_vertical = np.sum((target_pos-decoded["forecast_pos"])*normal_vec, axis=-1) # dot product of relative position and normal vector of debris' plane
+        dist_vertical = np.abs(dot_vertical)-self.safe_dist
+        d2d = np.maximum(dist_lateral, dist_vertical) # distance to each debris' forecast
+        d2d = np.min(d2d, axis=1) # min distance to each debris' forecast
+
+        nd2t = np.linalg.norm((target_pos-primal_pos), axis=-1)/self.max_dist # normalized distance from primal pos to target
+        nd2o = np.linalg.norm(target_pos, axis=-1)/self.max_dist # normalized distance from target to origin
+
+        rewards_avoid = -(nd2t+nd2o)/2
+        rewards_avoid = rewards_avoid.squeeze()
+        rewards = np.where(d2d>0, rewards_avoid, -1)
+        return rewards
+        
+    def getObss(self, states:np.ndarray) -> np.ndarray:
+        batch_size = states.shape[0]
+        decoded = self.statesDecode(states)
+        primal = decoded["primal"].squeeze(axis=1)
+        forecast_time = decoded["forecast_time"].reshape((batch_size, -1))
+        forecast_pos = decoded["forecast_pos"].reshape((batch_size, -1))
+        forecast_vel = decoded["forecast_vel"].reshape((batch_size, -1))
+        obss = np.concatenate((primal, forecast_time, forecast_pos, forecast_vel), axis=1)
+        return self.obssNormalize(obss)
+
+    def obssNormalize(self, obss: np.ndarray) -> np.ndarray:
+        return obss

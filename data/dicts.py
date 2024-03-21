@@ -63,7 +63,8 @@ class stateDict:
             self.flags[flag] = False
     
 def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int, 
-                   items:typing.Tuple[str]=("td_targets", "regrets", "advantages")):
+                   items:typing.Tuple[str]=("td_targets", "regrets", "advantages"),
+                   other_terms:typing.Dict[str,typing.Tuple[int]]={}):
     '''
         dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones" and items.
         Items are float32 of shape (length,).
@@ -79,6 +80,8 @@ def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int,
     }
     for item in items:
         trans_dict[item] = np.zeros(length, dtype=np.float32)
+    for key in other_terms.keys():
+        trans_dict[key] = np.zeros((length, *other_terms[key]), dtype=np.float32)
     return trans_dict
 
 def concat_dicts(dicts:typing.List[dict]):

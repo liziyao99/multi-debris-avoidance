@@ -67,52 +67,22 @@ def debug2(n_debris, dummy=False):
     return d, T.testEnv.stage
 
 def debug3(batch_size=256, horizon=600, episode=100):
-    from trainer.trainer import treeTrainer
-    from agent.agent import normalDistAgent
-    from env.env import treeEnvB
-    import env.propagatorB as pB
-    import rich.progress
+    from agent.agent import planTrackAgent
+    from env.propagator import CWPlanTrackPropagator
 
-    propB = pB.CWPropagatorB(device="cuda")
-
-    action_bound = 6e-2
-    agent = normalDistAgent(obs_dim=propB.obs_dim, action_dim=propB.action_dim,
-                            actor_hiddens=[512]*10, critic_hiddens=[512]*10, 
-                            action_lower_bound=-action_bound, action_upper_bound=action_bound, 
-                            actor_lr=1E-5, critic_lr=5E-4)
-    
-    from agent import net
-    import torch
-    state_dim = propB.state_dim
-    action_dim = propB.action_dim
-    ub = agent.actor.obc.upper_bounds[:action_dim]
-    lb = agent.actor.obc.lower_bounds[:action_dim]
-    sw = torch.tensor([1.,1.,1.,0.1,0.1,0.1])
-    cw = torch.tensor([0.01,0.01,0.01])
-    tracker = net.trackNet(state_dim, action_dim,
-                            n_hiddens=[512]*4, 
-                            state_weights=sw, control_weights=cw, 
-                            upper_bounds=ub, lower_bounds=lb).to(device=propB.T.device)
-    opt = torch.optim.Adam(tracker.parameters(), lr=1e-4)
-    
-    loss_list = []
-    with rich.progress.Progress() as pbar:
-        task = pbar.add_task("sequential optimize", total=episode)
-        for _ in range(episode):
-            states = propB.T.randomInitStates(batch_size).to(agent.device)
-            targets = propB.T.randomInitStates(batch_size).to(agent.device)
-            targets_seq = torch.tile(targets, (horizon,1,1))
-            loss = propB.T.seqTrack(states, targets_seq, tracker)
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            loss_list.append(loss.item())
-            pbar.update(task, advance=1)
-    return loss_list
-    
+    prop = CWPlanTrackPropagator(2)
+    sw = torch.tensor([1, 1, 1, 0.1, 0.1, 0.1])
+    cw = torch.tensor([0.01, 0.01, 0.01])
+    cub = torch.tensor([0.06]*3)
+    clb = torch.tensor([-0.06]*3)
+    agent = planTrackAgent(prop.state_dim, prop.obs_dim, prop.action_dim, sw, cw, control_upper_bounds=cub, control_lower_bounds=clb)
+    states = prop.randomInitStates(10)
+    obss = prop.getObss(states)
 
 if __name__ == "__main__":
-    ll = debug3()
-    plt.close("all")
-    plt.plot(ll)
-    plt.show()
+    from trainer.trainer import CWPTT
+    trainer = CWPTT(2, "cuda")
+    trainer.agent.load("../model/planTrack.ptd")
+    d, stage = trainer.test(3600)
+    print(stage)
+

@@ -48,6 +48,9 @@ class PropagatorT(Propagator):
     def obssNormalize(self, obss:torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
     
+    def obssDenormalize(self, obss:torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+    
     def seqOpt(self, states:torch.Tensor, agent, horizon:int, totalOptStep=True, smooth=False, smooth_k=0.01):
         '''
             sequence optimization target function, total reward to be maximized, 
@@ -87,15 +90,16 @@ class PropagatorT(Propagator):
             agent.actor_opt.step()
         return loss
     
-    def seqTrack(self, states:torch.Tensor, targets_seq:torch.Tensor, tracker) -> torch.Tensor:
+    def seqTrack(self, init_states:torch.Tensor, targets_seq:torch.Tensor, tracker) -> torch.Tensor:
         '''
             args:
                 `states`: shape (batch_size,state_dim)
                 `targets_seq`: shape (horizon,batch_size,state_dim)
                 `tracker`: see `trackNet`.
         '''
-        batch_size = states.shape[0]
+        batch_size = init_states.shape[0]
         horizon = targets_seq.shape[0]
+        states = init_states
         states_seq = []
         for i in range(horizon):
             states_seq.append(states)
@@ -433,3 +437,56 @@ class CWDebrisPropagatorT(PropagatorT):
         primal_proj, primal_orth = lineProj(primal_pos, forecast_pos, forecast_vel)
         d2p = torch.linalg.norm(primal_orth, dim=2) # distance to debris' forecast
         return d2o, d2d, d2p
+    
+
+class CWPlanTrackPropagatorT(CWDebrisPropagatorT):
+    def __init__(self, 
+                 device: str, 
+                 n_debris, 
+                 dt=1, 
+                 orbit_rad=7000000, 
+                 max_dist=5000, 
+                 safe_dist=500
+                ) -> None:
+        super().__init__(device, n_debris, dt, orbit_rad, max_dist, safe_dist)
+        self.obs_dim = 6+self.n_debris*7 # primal state and forecast data, no debris' state
+
+    def getPlanRewards(self, states:torch.Tensor, target:torch.Tensor):
+        batch_size = states.shape[0]
+        target = target.reshape((batch_size,1,-1))
+        target_pos = target[:, :, :3]
+        decoded = self.statesDecode(states)
+        primal_pos = decoded["primal"][:,:,:3]
+
+        forecast_states = torch.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),dim=-1)
+        forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
+        n_acc = forecast_acc/torch.norm(forecast_acc, dim=-1, keepdim=True)
+        n_vel = decoded["forecast_vel"]/torch.norm(decoded["forecast_vel"], dim=-1, keepdim=True)
+        normal_vec = torch.cross(n_vel, n_acc, dim=-1)
+        normal_vec = normal_vec/torch.norm(normal_vec, dim=-1, keepdim=True)
+
+        dot_lateral = torch.sum((target_pos-decoded["forecast_pos"])*(-n_acc), axis=-1) # negative dot product of relative position and debris' acceleration
+        dist_lateral = dot_lateral-self.safe_dist
+        dot_vertical = torch.sum((target_pos-decoded["forecast_pos"])*normal_vec, axis=-1) # dot product of relative position and normal vector of debris' plane
+        dist_vertical = torch.abs(dot_vertical)-self.safe_dist
+        d2d = torch.max(dist_lateral, dist_vertical) # distance to each debris' forecast
+        d2d = torch.min(d2d, dim=1) # min distance to each debris' forecast
+
+        nd2t = torch.norm((target_pos-primal_pos), dim=-1)/self.max_dist # normalized distance from primal pos to target
+        nd2o = torch.norm(target_pos, dim=-1)/self.max_dist # normalized distance from target to origin
+
+        rewards = torch.where(d2d.values>0, -(nd2t+nd2o)/2, -1)
+        return rewards.detach()
+        
+    def getObss(self, states:torch.Tensor) -> torch.Tensor:
+        batch_size = states.shape[0]
+        decoded = self.statesDecode(states)
+        primal = decoded["primal"].squeeze(dim=1)
+        forecast_time = decoded["forecast_time"].reshape((batch_size, -1))
+        forecast_pos = decoded["forecast_pos"].reshape((batch_size, -1))
+        forecast_vel = decoded["forecast_vel"].reshape((batch_size, -1))
+        obss = torch.concatenate((primal, forecast_time, forecast_pos, forecast_vel), dim=1)
+        return self.obssNormalize(obss)
+
+    def obssNormalize(self, obss: torch.Tensor) -> torch.Tensor:
+        return obss

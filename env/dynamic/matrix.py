@@ -148,7 +148,7 @@ def CW_constConVec(t0:float,
     ])
     return trans_u
 
-@nb.njit
+# @nb.njit
 def CW_constConVecs(t0:float,
                     t :float,
                     u :np.ndarray,

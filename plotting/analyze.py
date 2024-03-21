@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import math
+import math, typing
 
 from plotting.dataplot import moving_average
 from agent.agent import rlAgent
@@ -34,8 +34,8 @@ def criticContour(agent:rlAgent, dims=(0,1), span=(-2,2), step=21, singles=0.):
     plt.colorbar()
     plt.show()
 
-def historyFile(trans_dict:dict, agent:rlAgent, stage=-1, n_debris=0):
-    fig_num = 5+n_debris
+def historyFile(trans_dict:dict, agent:rlAgent=None, stage=-1, n_debris=0, items:typing.Tuple[str]=()):
+    fig_num = 5+n_debris+(len(items))
     col = math.ceil(fig_num/5)
     fig, axs = plt.subplots(5, col, sharex=True, figsize=plt.figaspect(fig_num/(2*col)))
     if col>1:
@@ -68,9 +68,10 @@ def historyFile(trans_dict:dict, agent:rlAgent, stage=-1, n_debris=0):
     axs[3].set_title("reward")
 
     # critic
-    obss = torch.from_numpy(trans_dict["obss"][:stage]).float().to(agent.device)
-    critic = agent.critic(obss).detach().cpu().numpy()
-    axs[4].plot(critic)
+    if agent is not None:
+        obss = torch.from_numpy(trans_dict["obss"][:stage]).float().to(agent.device)
+        critic = agent.critic(obss).detach().cpu().numpy()
+        axs[4].plot(critic)
     axs[4].set_title("critic")
 
     for j in range(n_debris):
@@ -81,6 +82,10 @@ def historyFile(trans_dict:dict, agent:rlAgent, stage=-1, n_debris=0):
         axs[5+j].plot(d2d, label="d2d", color=colors[-1])
         axs[5+j].legend()
         axs[5+j].set_title(f"debris{j}")
+
+    for j in range(len(items)):
+        axs[5+n_debris+j].plot(trans_dict[items[j]])
+        axs[5+n_debris+j].set_title(items[j])
 
     plt.show()
     return fig, axs
