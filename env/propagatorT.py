@@ -112,6 +112,21 @@ class PropagatorT(Propagator):
         states_seq = torch.stack(states_seq)
         loss = tracker.loss(states_seq, targets_seq)
         return loss
+    
+    def stepTrack(self, states:torch.Tensor, targets:torch.Tensor, tracker) -> torch.Tensor:
+        '''
+            args:
+                `states`: shape (batch_size, state_dim)
+                `targets`: shape (batch_size, state_dim)
+                `tracker`: see `trackNet`.
+        '''
+        obss = self.getObss(states)
+        obss_t = self.getObss(targets.detach())
+        tracker_input = torch.hstack((obss, obss_t))
+        actions = tracker(tracker_input)
+        states, _, _, _ = self.propagate(states, actions)
+        loss = tracker.loss(states, targets)
+        return loss
 
     
 class linearSystemT(PropagatorT):
@@ -182,7 +197,7 @@ class motionSystemT(linearSystemT):
         dist2 = torch.distributions.Uniform(low=-self.max_dist/f2, high=self.max_dist/f2)
         states[:,:self.space_dim] = dist1.sample((num_states,self.space_dim))
         states[:,self.space_dim:] = dist2.sample((num_states,self.space_dim))
-        return states
+        return states.to(self.device)
     
 
 class CWPropagatorT(motionSystemT):
@@ -223,7 +238,7 @@ class CWPropagatorT(motionSystemT):
         dist2 = torch.distributions.Uniform(low=-self.max_dist/f2, high=self.max_dist/f2)
         states[:,:self.space_dim] = dist1.sample((num_states,self.space_dim))
         states[:,self.space_dim:] = dist2.sample((num_states,self.space_dim))
-        return states
+        return states.to(self.device)
     
     def obssNormalize(self, obss: torch.Tensor) -> torch.Tensor:
         f1 = self.max_dist
@@ -395,7 +410,7 @@ class CWDebrisPropagatorT(PropagatorT):
             "forecast_vel": forecast_vel
         }
         states = self.statesEncode(states_dict)
-        return states
+        return states.to(self.device)
     
     def obssNormalize(self, obss:torch.Tensor) -> torch.Tensor:
         # f1 = self.max_dist

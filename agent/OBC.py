@@ -51,13 +51,21 @@ class outputBoundConfig:
         return self
     
     @property
+    def max_norm(self):
+        bounds = torch.vstack((self.upper_bounds, self.lower_bounds))
+        bounds = torch.abs(bounds)
+        bigger = torch.max(bounds, dim=0)[0]
+        norm = torch.norm(bigger)
+        return norm.item()
+
+    @property
     def device(self):
         return self.upper_bounds.device
     
 
 class outputBoundConfig_mp(outputBoundConfig):
     '''
-        python can't pickle lambda so `outputBoundConfig` is not available for multiprocessing. 
+        python can't pickle lambda hence `outputBoundConfig` is not available for multiprocessing. 
         `outputBoundConfig_mp` is a wrapper of `outputBoundConfig` that can be pickled.
     '''
     def __init__(self, upper_bounds: torch.Tensor, lower_bounds: torch.Tensor) -> None:

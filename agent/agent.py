@@ -269,7 +269,7 @@ class planTrackAgent(boundedRlAgent):
     def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
         self.actor = boundedFcNet(self.obs_dim, self.plan_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
         '''
-            input obs and output plan (target state), calling `planer` is more appreciated.
+            input obs and output plan (target state), calling `planner` is more appreciated.
         '''
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
 
@@ -293,7 +293,7 @@ class planTrackAgent(boundedRlAgent):
         return states[:, :self.track_dim]
     
     @property
-    def planer(self):
+    def planner(self):
         '''
             wrapped `actor`.
             Input obs and output plan (target state to be tracked).
@@ -301,7 +301,7 @@ class planTrackAgent(boundedRlAgent):
         return self.actor
     
     @property
-    def planer_opt(self):
+    def planner_opt(self):
         return self.actor_opt
     
     @property
@@ -316,29 +316,31 @@ class planTrackAgent(boundedRlAgent):
     def Q_opt(self):
         return self.critic_opt
 
-    def act(self, obs:torch.Tensor, primal_states:torch.Tensor):
+    def act(self, obss:torch.Tensor):
         '''
             returns:
-                `target_states`: observation of state to be tracked.
+                `target_states`: state to be tracked.
                 `control`: control to be applied.
         '''
-        obs = obs.to(self.device)
-        target_states, _ = self.track_target(obs)
-        tracker_input = torch.hstack((primal_states, target_states))
+        raise NotImplementedError("TODO: `track_target` output state, but obs needed.")
+        obss = obss.to(self.device)
+        primal_obss = self.extract_primal_obs(obss)
+        target_states, _ = self.track_target(obss)
+        tracker_input = torch.hstack((primal_obss, target_obss))
         control = self.tracker(tracker_input)
         return target_states, control
     
-    def act_target(self, target_states:torch.Tensor, primal_states:torch.Tensor):
-        tracker_input = torch.hstack((primal_states, target_states))
+    def act_target(self, primal_obss:torch.Tensor, target_obss:torch.Tensor):
+        tracker_input = torch.hstack((primal_obss, target_obss))
         control = self.tracker(tracker_input)
-        return target_states, control
+        return target_obss, control
     
     def track_target(self, obs:torch.Tensor):
         '''
             returns: `target_states` and `planed_states`.
         '''
         obs = obs.to(self.device)
-        planed_states = self.planer(obs)
+        planed_states = self.planner(obs)
         pad_zeros = torch.zeros((obs.shape[0], self.pad_dim), device=self.device)
         target_states = torch.hstack((planed_states, pad_zeros))
         return target_states, planed_states
@@ -347,7 +349,7 @@ class planTrackAgent(boundedRlAgent):
         '''
             returns: `target_states` and `planed_states`.
         '''
-        planed_states = self.planer.obc.uniSample(batch_size).to(self.device)
+        planed_states = self.planner.obc.uniSample(batch_size).to(self.device)
         pad_zeros = torch.zeros((batch_size, self.pad_dim), device=self.device)
         target_states = torch.hstack((planed_states, pad_zeros))
         return target_states, planed_states

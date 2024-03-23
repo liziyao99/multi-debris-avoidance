@@ -66,8 +66,9 @@ def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int,
                    items:typing.Tuple[str]=("td_targets", "regrets", "advantages"),
                    other_terms:typing.Dict[str,typing.Tuple[int]]={}):
     '''
-        dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones" and items.
+        dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones" and items and other_terms.
         Items are float32 of shape (length,).
+        Other_terms are of shape (length,*other_terms[key]).
     '''
     trans_dict = {
         "states": np.zeros((length,state_dim), dtype=np.float32),
@@ -82,6 +83,29 @@ def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int,
         trans_dict[item] = np.zeros(length, dtype=np.float32)
     for key in other_terms.keys():
         trans_dict[key] = np.zeros((length, *other_terms[key]), dtype=np.float32)
+    return trans_dict
+
+def init_transDictBatch(length:int, batch_size:int, state_dim:int, obs_dim:int, action_dim:int,
+                   items:typing.Tuple[str]=(),
+                   other_terms:typing.Dict[str,typing.Tuple[int]]={}):
+    '''
+        dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones" and items and other_terms.
+        Items are float32 of shape (length,batch_size).
+        Other_terms are of shape (length,batch_size,*other_terms[key]).
+    '''
+    trans_dict = {
+        "states": np.zeros((length,batch_size,state_dim), dtype=np.float32),
+        "obss": np.zeros((length,batch_size,obs_dim), dtype=np.float32),
+        "actions": np.zeros((length,batch_size,action_dim), dtype=np.float32),
+        "next_states": np.zeros((length,batch_size,state_dim), dtype=np.float32),
+        "next_obss": np.zeros((length,batch_size,obs_dim), dtype=np.float32),
+        "rewards": np.zeros((length,batch_size), dtype=np.float32),
+        "dones": np.zeros((length,batch_size), dtype=np.bool_),
+    }
+    for item in items:
+        trans_dict[item] = np.zeros((length,batch_size), dtype=np.float32)
+    for key in other_terms.keys():
+        trans_dict[key] = np.zeros((length,batch_size,*other_terms[key]), dtype=np.float32)
     return trans_dict
 
 def concat_dicts(dicts:typing.List[dict]):

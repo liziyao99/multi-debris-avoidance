@@ -81,8 +81,8 @@ def debug3(batch_size=256, horizon=600, episode=100):
 
 if __name__ == "__main__":
     from trainer.trainer import CWPTT
-    trainer = CWPTT(2, "cuda")
-    trainer.agent.load("../model/planTrack.ptd")
-    d, stage = trainer.test(3600)
-    print(stage)
+    trainer = CWPTT(3, "cuda")
+    trainer.agent.load("../model/planTrack3.ptd")
+    # trainer.trainUnity(3600)
+    trainer.test(3600, "mc")
 
