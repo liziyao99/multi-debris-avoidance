@@ -5,17 +5,18 @@ import math, typing
 
 from plotting.dataplot import moving_average
 from agent.agent import rlAgent
+from agent import net
 
 def criticGrid2D(agent:rlAgent, dims=(0,1), span=(-2,2), step=21, singles=0.):
     x0 = np.linspace(span[0], span[1], step)
     xs = tuple([x0]*2)
     XY = np.meshgrid(*xs)
     if not hasattr(singles, "__iter__"):
-        singles = [singles]*(agent.obs_dim-2)
+        singles = [singles]*(agent.critic.n_feature-2)
     coords = []
     idx_d = 0
     idx_s = 0
-    for i in range(agent.obs_dim):
+    for i in range(agent.critic.n_feature):
         if i in dims:
             coords.append(XY[idx_d].reshape((-1,1)))
             idx_d += 1
@@ -24,7 +25,10 @@ def criticGrid2D(agent:rlAgent, dims=(0,1), span=(-2,2), step=21, singles=0.):
             idx_s += 1
     points = np.hstack(coords)
     points = torch.from_numpy(points).float().to(agent.device)
-    values = agent.critic(points).detach().cpu().numpy()
+    if type(agent.critic) is not net.QNet:
+        values = agent.critic(points).detach().cpu().numpy()
+    else:
+        values = agent.critic.forward_(points).detach().cpu().numpy()
     values = values.reshape([step]*2)
     return XY, values
 

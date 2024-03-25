@@ -189,3 +189,8 @@ class QNet(fcNet):
         x = torch.cat((obs, action), dim=-1)
         fc_out = self.fc_layers(x)
         return self.post_process(fc_out)
+    
+    def forward_(self, obs_action):
+        x = obs_action
+        fc_out = self.fc_layers(x)
+        return self.post_process(fc_out)
