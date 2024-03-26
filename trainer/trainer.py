@@ -270,6 +270,9 @@ class planTrackTrainer:
         return actor_loss_list, critic_loss_list, total_rewards
     
     def trainUnity(self, horizon:int, episode=100, epoch=10, batch_size=256, explore_eps=0.5):
+        '''
+            returns: `tracker_loss_list`, `planner_loss_list`, `critic_loss_list`, `total_rewards`
+        '''
         tracker_loss_list = []
         planner_loss_list = []
         critic_loss_list = []
