@@ -227,7 +227,7 @@ class planTrackTrainer:
                 progress.update(task, advance=1)
         return loss_list
     
-    def trainPlaner(self, episode=100, epoch=10, batch_size=256, explore_eps=0.5):
+    def trainPlanner(self, episode=100, epoch=10, batch_size=256, explore_eps=0.5):
         actor_loss_list = []
         critic_loss_list = []
         total_rewards = []
