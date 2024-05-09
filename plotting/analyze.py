@@ -42,9 +42,12 @@ def historyFile(trans_dict:dict, agent:rlAgent=None, stage=-1, n_debris=0,
                 items:typing.Tuple[str]=(), 
                 max_dist=5000,
                 safe_dist=500):
-    fig_num = 5+n_debris+(len(items))
-    col = math.ceil(fig_num/5)
-    fig, axs = plt.subplots(5, col, sharex=True, figsize=plt.figaspect(fig_num/(2*col)))
+    base = 3
+    if agent is not None:
+        base += 1
+    fig_num = base+n_debris+(len(items))
+    col = math.ceil(fig_num/base)
+    fig, axs = plt.subplots(base, col, sharex=True, figsize=plt.figaspect(fig_num/(2*col)))
     if col>1:
         axs = axs.swapaxes(0,1).flatten()
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
@@ -70,31 +73,27 @@ def historyFile(trans_dict:dict, agent:rlAgent=None, stage=-1, n_debris=0,
     axs[2].legend()
     axs[2].set_title("primal thrust")
 
-    # rewards
-    axs[3].plot(trans_dict["rewards"][:stage])
-    axs[3].set_title("reward")
-
     # critic
     if agent is not None:
         obss = torch.from_numpy(trans_dict["obss"][:stage]).float().to(agent.device)
         critic = agent.critic(obss).detach().cpu().numpy()
-        axs[4].plot(critic)
-    axs[4].set_title("critic")
+        axs[3].plot(critic)
+        axs[3].set_title("critic")
 
     for j in range(n_debris):
         debris_pos = trans_dict["states"][:stage, 6*(j+1):6*(j+1)+3]
         for i in range(3):
-            axs[5+j].plot(debris_pos[:, i], label=f"r{i}", color=colors[i], alpha=0.3)
-            axs[5+j].set_ylim(-max_dist, max_dist)
-            axs[5+j].axhline(y=safe_dist, color="k", linestyle="--")
+            axs[base+j].plot(debris_pos[:, i], label=f"r{i}", color=colors[i], alpha=0.3)
+            axs[base+j].set_ylim(-max_dist, max_dist)
+            axs[base+j].axhline(y=safe_dist, color="k", linestyle="--")
         d2d = np.linalg.norm(debris_pos-trans_dict["states"][:stage, :3], axis=1)
-        axs[5+j].plot(d2d, label="d2d", color=colors[-1])
-        axs[5+j].legend()
-        axs[5+j].set_title(f"debris{j}")
+        axs[base+j].plot(d2d, label="d2d", color=colors[-1])
+        axs[base+j].legend()
+        axs[base+j].set_title(f"debris{j}")
 
     for j in range(len(items)):
-        axs[5+n_debris+j].plot(trans_dict[items[j]][:stage])
-        axs[5+n_debris+j].set_title(items[j])
+        axs[base+n_debris+j].plot(trans_dict[items[j]][:stage])
+        axs[base+n_debris+j].set_title(items[j])
 
     plt.show()
     return fig, axs

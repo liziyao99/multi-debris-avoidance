@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import typing, math
 
 BASIC_KEYS = ("states", "obss", "actions", "rewards", "next_states", "next_obss", "dones")
@@ -87,12 +88,14 @@ def init_transDict(length:int, state_dim:int, obs_dim:int, action_dim:int,
 
 def init_transDictBatch(length:int, batch_size:int, state_dim:int, obs_dim:int, action_dim:int,
                    items:typing.Tuple[str]=(),
-                   other_terms:typing.Dict[str,typing.Tuple[int]]={}):
+                   other_terms:typing.Dict[str,typing.Tuple[int]]={}, struct="numpy", device="cpu"):
     '''
         dict keys: "states", "obss", "actions", "next_states", "next_obss", "rewards", "dones" and items and other_terms.
         Items are float32 of shape (length,batch_size).
         Other_terms are of shape (length,batch_size,*other_terms[key]).
     '''
+    if struct not in ["numpy", "torch"]:
+        raise(ValueError("struct must be \"numpy\" or \"torch\"." ))
     trans_dict = {
         "states": np.zeros((length,batch_size,state_dim), dtype=np.float32),
         "obss": np.zeros((length,batch_size,obs_dim), dtype=np.float32),
@@ -106,6 +109,10 @@ def init_transDictBatch(length:int, batch_size:int, state_dim:int, obs_dim:int, 
         trans_dict[item] = np.zeros((length,batch_size), dtype=np.float32)
     for key in other_terms.keys():
         trans_dict[key] = np.zeros((length,batch_size,*other_terms[key]), dtype=np.float32)
+
+    if struct=="torch":
+        for key in trans_dict.keys():
+            trans_dict[key] = torch.from_numpy(trans_dict[key]).to(device=device)
     return trans_dict
 
 def concat_dicts(dicts:typing.List[dict]):

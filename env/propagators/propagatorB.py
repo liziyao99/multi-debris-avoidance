@@ -4,8 +4,8 @@
 import numpy as np
 import torch
 
-import env.propagator as propagator
-import env.propagatorT as propagatorT
+import env.propagators.propagator as propagator
+import env.propagators.propagatorT as propagatorT
 
 class dummyPropagatorB:
     def __init__(self,

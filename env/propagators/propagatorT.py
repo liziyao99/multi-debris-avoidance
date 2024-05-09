@@ -3,7 +3,7 @@
 '''
 import torch
 import torch.nn.functional as F
-from env.propagator import Propagator
+from env.propagators.propagator import Propagator
 from env.dynamic import matrix
 from utils import lineProj
 

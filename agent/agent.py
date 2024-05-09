@@ -380,3 +380,120 @@ class planTrackAgent(boundedRlAgent):
         self.critic_opt.load_state_dict(dicts["v_opt"])
         self.tracker.load_state_dict(dicts["tracker"])
         self.tracker_opt.load_state_dict(dicts["tracker_opt"])
+
+
+class H2Agent(boundedRlAgent):
+    def __init__(self, 
+                 obs_dim: int, 
+                 h1out_dim: int,
+                 h2out_dim: int,
+                 h1pad_dim=0,
+                 h1a_hiddens: typing.List[int] = [128] * 5, 
+                 h2a_hiddens: typing.List[int] = [128] * 5,
+                 h1c_hiddens: typing.List[int] = [128] * 5, 
+                 h1out_ub:torch.Tensor=None,
+                 h1out_lb:torch.Tensor=None,
+                 h2out_ub:torch.Tensor=None, 
+                 h2out_lb:torch.Tensor=None, 
+                 h1a_lr=1e-5, 
+                 h2a_lr=1e-4, 
+                 h1c_lr=1e-4, 
+                 device=None
+                ) -> None:
+        self.obs_dim = obs_dim
+        self.h1out_dim = h1out_dim
+        self.h2out_dim = h2out_dim
+        self.pad_dim = h1pad_dim
+        self.h1h2_dim = h1out_dim+h1pad_dim
+
+        self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+
+        if h1out_ub is None:
+            h1out_ub = [ torch.inf]*h1out_dim
+        if h1out_lb is None:
+            h1out_lb = [-torch.inf]*h1out_dim
+        if h2out_ub is None:
+            h2out_ub = [ torch.inf]*h2out_dim
+        if h2out_lb is None:
+            h2out_lb = [-torch.inf]*h2out_dim
+        
+        self._init_networks(h1a_hiddens, h2a_hiddens, h1c_hiddens, h1a_lr, h2a_lr, h1c_lr, h1out_ub, h1out_lb, h2out_ub, h2out_lb)
+
+    def _init_networks(self, h1a_hiddens, h2a_hiddens, h1c_hiddens, h1a_lr, h2a_lr, h1c_lr, h1out_ub, h1out_lb, h2out_ub, h2out_lb):
+        self.h1a = boundedFcNet(self.obs_dim, self.h1out_dim, h1a_hiddens, h1out_ub, h1out_lb).to(self.device)
+        self.h1a_opt = torch.optim.Adam(self.h1a.parameters(), lr=h1a_lr)
+        self.h1c = QNet(self.obs_dim, self.h1out_dim, h1c_hiddens).to(self.device)
+        self.h1c_opt = torch.optim.Adam(self.h1c.parameters(), lr=h1c_lr)
+        self.h2a = boundedFcNet(self.obs_dim+self.h1h2_dim, self.h2out_dim, h2a_hiddens, h2out_ub, h2out_lb).to(self.device)
+        self.h2a_opt = torch.optim.Adam(self.h2a.parameters(), lr=h2a_lr)
+
+    def h1explore(self, size:int):
+        output = self.h1a.obc.uniSample(size).to(self.device)
+        sample = self.h1a.sample(output)
+        return output, sample
+    
+    @property
+    def planner(self):
+        '''
+            wrapped `actor`.
+            Input obs and output plan (target state to be tracked).
+        '''
+        return self.h1a
+    
+    @property
+    def planner_opt(self):
+        return self.h1a_opt
+    
+    @property
+    def Q(self):
+        '''
+            wrapped `critic`.
+            Input (obs, action) and output Q value.
+        '''
+        return self.h1c
+    
+    @property
+    def Q_opt(self):
+        return self.h1c_opt
+
+    def act(self, obss:torch.Tensor):
+        pass
+
+    def h1act(self, obss:torch.Tensor):
+        '''
+            returns: `output`, `sample`.
+        '''
+        obss = obss.to(self.device)
+        output = self.h1a(obss)
+        sample = self.h1a.sample(output)
+        return output, sample
+    
+    def h2act(self, obss:torch.Tensor, h1_action:torch.Tensor):
+        '''
+            returns: `output`, `sample`.
+        '''
+        obss = obss.to(self.device)
+        h2_input = torch.hstack((obss, h1_action))
+        output = self.h2a(h2_input)
+        sample = self.h2a.sample(output)
+        return output, sample
+    
+    def save(self, path="../model/dicts.ptd"):
+        dicts = {
+                "h1a_net": self.h1a.state_dict(),
+                "h1c_net": self.h1c.state_dict(),
+                "h1a_opt": self.h1a_opt.state_dict(),
+                "h1c_opt": self.h1c_opt.state_dict(),
+                "h2a_net": self.h2a.state_dict(),
+                "h2c_opt": self.h2a_opt.state_dict()
+            }
+        torch.save(dicts, path)
+
+    def load(self, path="../model/dicts.ptd"):
+        dicts = torch.load(path)
+        self.h1a.load_state_dict(dicts["h1a_net"])
+        self.h1c.load_state_dict(dicts["h1c_net"])
+        self.h1a_opt.load_state_dict(dicts["h1a_opt"])
+        self.h1c_opt.load_state_dict(dicts["h1c_opt"])
+        self.h2a.load_state_dict(dicts["h2a_net"])
+        self.h2a_opt.load_state_dict(dicts["h2a_opt"])

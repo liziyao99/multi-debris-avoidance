@@ -9,7 +9,7 @@ from data.array import indexNode, nodesArray
 from agent.agent import rlAgent, boundedRlAgent
 
 
-class stateNode(indexNode):
+class stateIndexNode(indexNode):
     def __init__(self, name, 
                  state_dim:int, obs_dim:int, action_dim:int, 
                  gen=-1, idx=-1, flags:typing.Tuple[str]=[]):
@@ -53,7 +53,7 @@ class stateNode(indexNode):
         if self.is_leaf:
             self.td_target = self.reward if self.done else self.reward+gamma*self.value
         else:
-            next_td_targets = [child.backup(gamma) for child in self.children]
+            next_td_targets = [child.backup(gamma, mode) for child in self.children]
             if mode=="max":
                 self.td_target = self.reward + gamma*np.max(next_td_targets)
             elif mode=="mean":
@@ -115,13 +115,13 @@ class GST_0:
         self.select_explore_eps = select_explore_eps # selection exploration probability
         stateNode_kwargs = {"state_dim": state_dim, "obs_dim": obs_dim, "action_dim": action_dim, 
                             "flags": ("traced",)}
-        self.root = stateNode(name= 'root', **stateNode_kwargs)
+        self.root = stateIndexNode(name= 'root', **stateNode_kwargs)
         self.gen = 0
         self.nodes = []
         for i in range(max_gen):
             self.nodes.append([])
             for j in range(population):
-                self.nodes[i].append(stateNode(name=f'gen{i}_node{j}', gen=i, idx=j,
+                self.nodes[i].append(stateIndexNode(name=f'gen{i}_node{j}', gen=i, idx=j,
                                                **stateNode_kwargs))
                 if i==0:
                     self.nodes[i][j].parent = self.root
@@ -304,7 +304,7 @@ class GST_A:
         flags = ("traced",)
         items = ("values", "td_targets", "regrets", "advantages")
 
-        self.root = stateNode(name='root', state_dim=state_dim, obs_dim=obs_dim, action_dim=action_dim, flags=flags)
+        self.root = stateIndexNode(name='root', state_dim=state_dim, obs_dim=obs_dim, action_dim=action_dim, flags=flags)
         self.nodes = np.empty((max_gen, population), dtype=object)
         for i in range(max_gen):
             for j in range(population):

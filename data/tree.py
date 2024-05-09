@@ -1,7 +1,7 @@
 from data import dicts as D
 from data.array import nodesArray, edgesArray
 from agent import agent
-from env import propagator
+from env.propagators import propagator
 
 import typing
 import numpy as np

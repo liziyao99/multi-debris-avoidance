@@ -4,7 +4,7 @@ import typing
 from env.propagator import Propagator, debugPropagator
 from env.propagatorT import PropagatorT
 from env.propagatorB import dummyPropagatorB
-from tree.tree import stateDict
+from tree.geneticTree import stateDict
 from agent.agent import rlAgent
 from data.tree import GST
 import torch

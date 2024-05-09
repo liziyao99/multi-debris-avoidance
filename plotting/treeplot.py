@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import collections
 
-from tree.tree import stateNode
+from tree.geneticTree import stateIndexNode
 
 class treeRenderer:
     def __init__(self, population:int, max_gen:int):
@@ -11,19 +11,19 @@ class treeRenderer:
         self.__qr = collections.deque() # queue for render
         self.__qc = collections.deque() # queue for children
 
-    def nodePosMap(self, node:stateNode):
+    def nodePosMap(self, node:stateIndexNode):
         if node.depth==0: # root
             return ((self.population-1)/2, 0.)
         else:
             return (self.population-len(self.__qr)-1, node.depth)
 
-    def nodeColorMap(self, node:stateNode):
+    def nodeColorMap(self, node:stateIndexNode):
         return 'b'
     
-    def edgeColorMap(self, node:stateNode):
+    def edgeColorMap(self, node:stateIndexNode):
         return 'b'
     
-    def render(self, root:stateNode):
+    def render(self, root:stateIndexNode):
         nodePos = []
         parentPos = [None,]
         nodeColor = []

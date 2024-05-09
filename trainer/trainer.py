@@ -1,8 +1,9 @@
 from agent import agent
 from env import env as ENV
-from env import propagator
-from env import propagatorT
-from tree.tree import stateDict
+from env.propagators import propagator
+from env.propagators import propagatorT
+from env.propagators import hirearchicalPropagator
+from tree.geneticTree import stateDict
 import data.dicts as D
 from data.buffer import replayBuffer
 from plotting.dataplot import dataPlot
@@ -446,3 +447,73 @@ def CWPTT(n_debris, device):
                              device=device)
     trainer = planTrackTrainer(mainProp, trackProp, a)
     return trainer
+
+
+class H2Trainer:
+    def __init__(self, 
+                 prop:hirearchicalPropagator.H2Propagator,
+                 agent:agent.H2Agent,) -> None:
+        self.prop = prop
+        self.agent = agent
+
+    def h2Sim(self, states0:torch.Tensor):
+        '''
+            returns: `h2transdict`, `h2rewards`(with grad), `h1outputs`, `h1rewards`, dones
+        '''
+        batch_size = states0.shape[0]
+        trans_dict = D.init_transDictBatch(self.prop.h2_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.action_dim,
+                                           struct="torch", device=self.agent.device)
+        step = 0
+        done = False
+        obss = self.prop.getObss(states0, require_grad=True)
+        _, h1actions = self.agent.h1act(obss)
+        h1actions = h1actions.detach()
+        states = states0
+        h1rewards = torch.zeros(batch_size, device=self.agent.device)
+        h2rewards = torch.zeros(batch_size, device=self.agent.device, requires_grad=True)
+        while not done and step<self.prop.h2_step:
+            trans_dict["states"][step,...] = states[...].detach()
+            trans_dict["obss"][step,...] = obss[...].detach()
+            _, actions = self.agent.h2act(obss, h1actions)
+            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, h1actions, actions)
+            h1rs = h1rs + trs
+            trans_dict["actions"][step,...] = actions[...].detach()
+            trans_dict["next_states"][step,...] = states[...].detach()
+            trans_dict["next_obss"][step,...] = obss[...].detach()
+            trans_dict["rewards"][step,...] = h2rs[...].detach()
+            trans_dict["dones"][step,...] = dones[...].detach()
+            h1rewards = h1rewards + h1rs
+            h2rewards = h2rewards + h2rs
+            done = torch.all(dones)
+            step += 1
+        return trans_dict, h2rewards, h1actions, h1rewards, dones
+    
+    def h1Sim(self, states0:torch.Tensor=None):
+        if states0 is None:
+            states0 = self.prop.randomInitStates(1)
+        batch_size = states0.shape[0]
+        h1td = D.init_transDictBatch(self.prop.h1_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.action_dim,
+                                     struct="torch", device=self.agent.device)
+        h2R = []
+        step = 0
+        done = False
+        states = states0
+        obss = self.prop.getObss(states)
+        while not done and step<self.prop.h1_step:
+            h1td["states"][step, ...] = states[...].detach()
+            h1td["obss"][step, ...] = obss[...].detach()
+            h2td, h2rs, h1as, h1rs, dones = self.h2Sim(state)
+            state = h2td["next_states"][-1, ...]
+            obss = self.prop.getObss(state)
+            h1td["actions"][step, ...] = h1as[...].detach()
+            h1td["next_states"][step, ...] = state[...].detach()
+            h1td["next_obss"][step, ...] = obss[...].detach()
+            h1td["rewards"][step, ...] = h1rs[...].detach()
+            h1td["dones"][step, ...] = dones[...].detach()
+            h2R.append(h2rs)
+            done = torch.all(dones)
+            step += 1
+        h2R = torch.cat(h2R, dim=0)
+        h2loss = -torch.mean(h2R)
+        return h1td, h2loss
+        
