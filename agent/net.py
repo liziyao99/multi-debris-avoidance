@@ -73,7 +73,7 @@ class boundedFcNet(fcNet):
         super().__init__(n_feature, n_output, n_hiddens)
         self.obc = outputBoundConfig(upper_bounds, lower_bounds)
         '''
-            see `outputBoundConfig`.
+            see `outputBoundConfig_mp`.
         '''
 
     def to(self, device:str, **kwargs):
@@ -89,6 +89,12 @@ class boundedFcNet(fcNet):
         '''
         x = x.clamp(self.obc.lower_bounds, self.obc.upper_bounds)
         return x
+    
+    def uniSample(self, size:int):
+        '''
+            sample uniformly between output bounds.
+        '''
+        return self.obc.uniSample(size)
     
 class normalDistNet(boundedFcNet):
     def __init__(self, 

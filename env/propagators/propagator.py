@@ -414,9 +414,6 @@ class CWDebrisPropagator(Propagator):
         forecast_vel = decoded["forecast_vel"]
         d2o = np.linalg.norm(primal_pos, axis=2) # distance to origin
         d2d = np.linalg.norm(debris_pos-primal_pos, axis=2) # distance to debris
-        # print(forecast_pos)
-        # print(forecast_vel)
-        # print("\n")
         primal_proj, primal_orth = lineProj(primal_pos, forecast_pos, forecast_vel)
         d2p = np.linalg.norm(primal_orth, axis=-1) # distance to debris' forecast
         return d2o, d2d, d2p

@@ -143,7 +143,7 @@ class mpTreeTrainer:
                 while count<self.n_process: # mp workers running
                     if outq.qsize(): # new result in outq
                         if (trans_dict := outq.get()) is not None:
-                            trans_dicts = D.batch_dict(trans_dict, batch_size=self.main_trainer.batch_size)
+                            trans_dicts = D.split_dict(trans_dict, batch_size=self.main_trainer.batch_size)
                             als, cls = [], []
                             for d in trans_dicts:
                                 al, cl = self.main_trainer.update(d)
@@ -175,6 +175,6 @@ class mpTreeTrainer:
     def debug(self):
         trans_dicts = self.main_trainer.simulate()
         trans_dict = D.concat_dicts(trans_dicts)
-        trans_dicts = D.batch_dict(trans_dict, batch_size=self.main_trainer.batch_size)
+        trans_dicts = D.split_dict(trans_dict, batch_size=self.main_trainer.batch_size)
         for d in trans_dicts:
             self.main_agent.update(d)

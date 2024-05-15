@@ -1,5 +1,6 @@
 '''
     output bound config, defining classes that map networks' output to a bounded set.
+    NOTICE: lambda function is unavailable in subprocess, so do `outputBoundConfig`. Please use `outputBoundConfig_mp`.
 '''
 import torch
 from utils import affine

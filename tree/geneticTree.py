@@ -3,7 +3,7 @@ import anytree
 import numpy as np
 import torch
 import time, typing
-from env.propagator import Propagator
+from env.propagators.propagator import Propagator
 from data.dicts import stateDict, init_transDict
 from data.array import indexNode, nodesArray
 from agent.agent import rlAgent, boundedRlAgent

@@ -1,1 +1,1 @@
-from propagators import *
+from env.propagators import propagator, propagatorB, propagatorT

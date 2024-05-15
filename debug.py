@@ -12,7 +12,7 @@ def debug1(n_debris, seq=True):
     from trainer.trainer import treeTrainer
     from agent.agent import normalDistAgent
     from env.env import treeEnvB
-    import env.propagatorB as pB
+    import env.propagators.propagatorB as pB
     
     propB = pB.CWDebrisPropagatorB(device="cuda", n_debris=n_debris)
 
@@ -47,7 +47,7 @@ def debug2(n_debris, dummy=False):
     from trainer.trainer import treeTrainer
     from agent.agent import normalDistAgent
     from env.env import treeEnvB
-    import env.propagatorB as pB
+    import env.propagators.propagatorB as pB
     from plotting import analyze
 
     propB = pB.CWDebrisPropagatorB(device="cuda", n_debris=n_debris)
@@ -68,7 +68,7 @@ def debug2(n_debris, dummy=False):
 
 def debug3(batch_size=256, horizon=600, episode=100):
     from agent.agent import planTrackAgent
-    from env.propagator import CWPlanTrackPropagator
+    from env.propagators.propagator import CWPlanTrackPropagator
 
     prop = CWPlanTrackPropagator(2)
     sw = torch.tensor([1, 1, 1, 0.1, 0.1, 0.1])
@@ -80,9 +80,28 @@ def debug3(batch_size=256, horizon=600, episode=100):
     obss = prop.getObss(states)
 
 if __name__ == "__main__":
-    from trainer.trainer import CWPTT
-    trainer = CWPTT(3, "cuda")
-    trainer.agent.load("../model/planTrack3.ptd")
-    # trainer.trainUnity(3600)
-    trainer.test(3600, "mc")
-
+    from env.propagators.hirearchicalPropagator import H2CWDePropagator
+    from agent.agent import H2Agent
+    from trainer.trainer import H2TreeTrainer
+    p = H2CWDePropagator(3, device="cuda")
+    h1out_ub = [ 1000]*3 + [ 3.6]*3
+    h1out_lb = [-1000]*3 + [-3.6]*3
+    h2out_ub = [ 0.06]*3
+    h2out_lb = [-0.06]*3
+    agent = H2Agent(obs_dim=p.obs_dim,
+                    h1obs_dim=p.obs_dim,
+                    h2obs_dim=6, 
+                    h1out_dim=p.h1_action_dim, 
+                    h2out_dim=p.h2_action_dim, 
+                    h1a_hiddens=[512], 
+                    h2a_hiddens=[512]*8, 
+                    h1c_hiddens=[512]*8,
+                    h1out_ub=h1out_ub, 
+                    h1out_lb=h1out_lb, 
+                    h2out_ub=h2out_ub, 
+                    h2out_lb=h2out_lb, 
+                    device="cuda")
+    T = H2TreeTrainer(p, agent,)
+    # T.h2Pretrain(10,10,512)
+    T.agent.load("../model/h2.ptd")
+    T.train(1,100,10,64)

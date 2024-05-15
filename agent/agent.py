@@ -1,4 +1,5 @@
 from agent.net import *
+import data.dicts as D
 
 import typing
 import torch
@@ -385,6 +386,8 @@ class planTrackAgent(boundedRlAgent):
 class H2Agent(boundedRlAgent):
     def __init__(self, 
                  obs_dim: int, 
+                 h1obs_dim: int,
+                 h2obs_dim: int,
                  h1out_dim: int,
                  h2out_dim: int,
                  h1pad_dim=0,
@@ -401,6 +404,8 @@ class H2Agent(boundedRlAgent):
                  device=None
                 ) -> None:
         self.obs_dim = obs_dim
+        self.h1obs_dim = h1obs_dim
+        self.h2obs_dim = h2obs_dim
         self.h1out_dim = h1out_dim
         self.h2out_dim = h2out_dim
         self.pad_dim = h1pad_dim
@@ -422,9 +427,9 @@ class H2Agent(boundedRlAgent):
     def _init_networks(self, h1a_hiddens, h2a_hiddens, h1c_hiddens, h1a_lr, h2a_lr, h1c_lr, h1out_ub, h1out_lb, h2out_ub, h2out_lb):
         self.h1a = boundedFcNet(self.obs_dim, self.h1out_dim, h1a_hiddens, h1out_ub, h1out_lb).to(self.device)
         self.h1a_opt = torch.optim.Adam(self.h1a.parameters(), lr=h1a_lr)
-        self.h1c = QNet(self.obs_dim, self.h1out_dim, h1c_hiddens).to(self.device)
+        self.h1c = QNet(self.h1obs_dim, self.h1out_dim, h1c_hiddens).to(self.device)
         self.h1c_opt = torch.optim.Adam(self.h1c.parameters(), lr=h1c_lr)
-        self.h2a = boundedFcNet(self.obs_dim+self.h1h2_dim, self.h2out_dim, h2a_hiddens, h2out_ub, h2out_lb).to(self.device)
+        self.h2a = boundedFcNet(self.h2obs_dim+self.h1h2_dim, self.h2out_dim, h2a_hiddens, h2out_ub, h2out_lb).to(self.device)
         self.h2a_opt = torch.optim.Adam(self.h2a.parameters(), lr=h2a_lr)
 
     def h1explore(self, size:int):
@@ -459,21 +464,29 @@ class H2Agent(boundedRlAgent):
     def act(self, obss:torch.Tensor):
         pass
 
+    def h1obs_preprocess(self, obss:torch.Tensor):
+        return obss.to(self.device)
+
     def h1act(self, obss:torch.Tensor):
         '''
             returns: `output`, `sample`.
         '''
-        obss = obss.to(self.device)
+        obss = self.h1obs_preprocess(obss)
         output = self.h1a(obss)
         sample = self.h1a.sample(output)
         return output, sample
+    
+    def h2obs_preprocess(self, obss:torch.Tensor, h1_actions:torch.Tensor):
+        obss = obss.to(self.device)
+        obss = obss[:,:self.h2obs_dim]
+        h2_input = torch.hstack((obss, h1_actions))
+        return h2_input
     
     def h2act(self, obss:torch.Tensor, h1_action:torch.Tensor):
         '''
             returns: `output`, `sample`.
         '''
-        obss = obss.to(self.device)
-        h2_input = torch.hstack((obss, h1_action))
+        h2_input = self.h2obs_preprocess(obss, h1_action)
         output = self.h2a(h2_input)
         sample = self.h2a.sample(output)
         return output, sample
@@ -485,7 +498,7 @@ class H2Agent(boundedRlAgent):
                 "h1a_opt": self.h1a_opt.state_dict(),
                 "h1c_opt": self.h1c_opt.state_dict(),
                 "h2a_net": self.h2a.state_dict(),
-                "h2c_opt": self.h2a_opt.state_dict()
+                "h2a_opt": self.h2a_opt.state_dict()
             }
         torch.save(dicts, path)
 
@@ -497,3 +510,30 @@ class H2Agent(boundedRlAgent):
         self.h1c_opt.load_state_dict(dicts["h1c_opt"])
         self.h2a.load_state_dict(dicts["h2a_net"])
         self.h2a_opt.load_state_dict(dicts["h2a_opt"])
+
+    def h1update(self, trans_dict):
+        '''
+            returns: `Q_loss`, `mc_loss`, `ddpg_loss`.
+        '''
+        trans_dict = D.torch_dict(trans_dict, device=self.device)
+
+        Q_values = self.Q(trans_dict["obss"], trans_dict["actions"])
+        Q_loss = F.mse_loss(Q_values, trans_dict["Q_targets"].reshape(Q_values.shape))
+        self.Q_opt.zero_grad()
+        Q_loss.backward()
+        self.Q_opt.step()
+
+        actions = self.h1a(trans_dict["obss"])
+        mc_loss = torch.mean(-trans_dict["regret_mc"]*torch.norm(actions-trans_dict["actions"],dim=-1))
+        self.h1a_opt.zero_grad()
+        mc_loss.backward()
+        self.h1a_opt.step()
+
+        actions = self.h1a(trans_dict["obss"])
+        ddpg_loss = torch.mean(-self.Q(trans_dict["obss"], actions))
+        self.h1a_opt.zero_grad()
+        ddpg_loss.backward()
+        self.h1a_opt.step()
+
+        return Q_loss.item(), mc_loss.item(), ddpg_loss.item()
+

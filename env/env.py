@@ -1,9 +1,9 @@
 import numpy as np
 import typing
 
-from env.propagator import Propagator, debugPropagator
-from env.propagatorT import PropagatorT
-from env.propagatorB import dummyPropagatorB
+from env.propagators.propagator import Propagator, debugPropagator
+from env.propagators.propagatorT import PropagatorT
+from env.propagators.propagatorB import dummyPropagatorB
 from tree.geneticTree import stateDict
 from agent.agent import rlAgent
 from data.tree import GST
