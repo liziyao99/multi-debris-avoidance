@@ -457,9 +457,9 @@ class H2TreeTrainer:
         self.agent = agent
         self.tree = undoTree(prop.h1_step, prop.state_dim, prop.obs_dim, prop.h1_action_dim)
 
-    def h2Sim(self, states0:torch.Tensor, h1actions:torch.Tensor=None, h1noise=True):
+    def h2Sim(self, states0:torch.Tensor, h1actions:torch.Tensor=None, h1noise=True, prop_with_grad=True):
         '''
-            returns: `h2transdict`, `next_states`, `h2rewards`(with grad), `h1actions`, `h1rewards`, `dones`, `terminal_rewards`.
+            returns: `h2transdict`, `next_states`, `h2rewards`(with grad if `prop_with_grad`), `h1actions`, `h1rewards`, `dones`, `terminal_rewards`.
         '''
         batch_size = states0.shape[0]
         trans_dict = D.init_transDictBatch(self.prop.h2_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h2_action_dim,
@@ -475,19 +475,18 @@ class H2TreeTrainer:
             noise = self.agent.h1a.uniSample(batch_size)/10
             h1actions = h1actions + noise
         h1actions = self.agent.h1a.clip(h1actions)
-        h1actions = h1actions + states0[:,:6] # increment control
-        h1actions = h1actions.detach()
+        h1actions_incremented = (h1actions+states0[:,:6]).detach() # increment control
         
         states = states0.clone()
         next_states = states0.clone()
         h1rewards = torch.zeros(batch_size, device=self.agent.device)
-        h2rewards = torch.zeros(batch_size, device=self.agent.device, requires_grad=True)
+        h2rewards = torch.zeros(batch_size, device=self.agent.device, requires_grad=prop_with_grad)
         terminal_rewards = torch.zeros(batch_size, device=self.agent.device)
         while not done and step<self.prop.h2_step:
             trans_dict["states"][step,...] = states[...].detach()
             trans_dict["obss"][step,...] = obss[...].detach()
-            _, actions = self.agent.h2act(obss, h1actions)
-            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, h1actions, actions)
+            _, actions = self.agent.h2act(obss, h1actions_incremented)
+            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, h1actions_incremented, actions, require_grad=prop_with_grad)
             terminal_rewards = torch.where(done_flags, terminal_rewards, trs)
             next_states = torch.where(done_flags.unsqueeze(1), next_states, states)
             done_flags = done_flags | dones
@@ -503,7 +502,7 @@ class H2TreeTrainer:
             step += 1
         return trans_dict, next_states, h2rewards, h1actions, h1rewards, done_flags, terminal_rewards
     
-    def h1Sim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1):
+    def h1Sim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1, train_h2a=False, prop_with_grad=True):
         if states0 is None:
             states0 = self.prop.randomInitStates(states_num)
         batch_size = states0.shape[0]
@@ -523,7 +522,7 @@ class H2TreeTrainer:
                 h1actions = self.agent.h1a.uniSample(batch_size)
             else:
                 h1actions = None
-            _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions)
+            _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, prop_with_grad=prop_with_grad)
             obss = self.prop.getObss(states)
             h1td["actions"][step, ...] = h1as[...].detach()
             h1td["next_states"][step, ...] = states[...].detach()
@@ -538,13 +537,18 @@ class H2TreeTrainer:
             done_flags = done_flags | dones
             done = torch.all(done_flags)
             step += 1
-        self.agent.h2a_opt.zero_grad()
         h2Loss = torch.mean(torch.stack(h2Loss))
-        h2loss.backward()
-        self.agent.h2a_opt.step()
-        return h1td, h2Loss.item()
+        if train_h2a and prop_with_grad:
+            self.agent.h2a_opt.zero_grad()
+            h2loss.backward()
+            self.agent.h2a_opt.step()
+            h2loss = h2loss.detach()
+        return h1td, h2Loss
     
-    def treeSim(self, select_itr:int, select_size:int, state0:torch.Tensor=None, h1_explore_eps=0.):
+    def treeSim(self, select_itr:int, select_size:int, state0:torch.Tensor=None, h1_explore_eps=0., train_h2a=False):
+        '''
+            returns: `trans_dict`, `H2loss`, `root.V_target`
+        '''
         if state0 is None:
             state0 = self.prop.randomInitStates(1)
         self.tree.reset_root(state0[0].detach().cpu().numpy(), self.prop.getObss(state0)[0].detach().cpu().numpy())
@@ -553,7 +557,7 @@ class H2TreeTrainer:
             states, idx_pairs = self.tree.select(select_size)
             states = np.vstack(states)
             states = torch.from_numpy(states).float().to(self.agent.device)
-            h1td, h2loss = self.h1Sim(states, h1_explore_eps)
+            h1td, h2loss = self.h1Sim(states, h1_explore_eps, train_h2a=train_h2a)
             h1td = D.numpy_dict(h1td)
             tds = D.deBatch_dict(h1td)
             for j in range(select_size):
@@ -562,14 +566,15 @@ class H2TreeTrainer:
             self.tree.backup()
             self.tree.update_regret_mc()
         trans_dict = self.tree.to_transdict()
-        return trans_dict, H2loss
+        return trans_dict, H2loss, self.tree.root.V_target
         
     def train(self, epoch:int, episode:int, select_itr:int, select_size:int, explore_eps=0.5, batch_size=640):
-        loss_list = {
-            "Q": [],
-            "mc": [],
-            "ddpg": [],
-            "h2": [],
+        data_list = {
+            "Q_loss": [],
+            "mc_loss": [],
+            "ddpg_loss": [],
+            "h2_loss": [],
+            "true_value": []
         }
         with Progress() as progress:
             task = progress.add_task("H2TreeTrainer training:", total=episode)
@@ -577,7 +582,7 @@ class H2TreeTrainer:
                 progress.tasks[task].description = "epoch {0} of {1}".format(i+1, epoch)
                 progress.tasks[task].completed = 0
                 for _ in range(episode):
-                    trans_dict, h2loss = self.treeSim(select_itr, select_size, h1_explore_eps=explore_eps)
+                    trans_dict, h2loss, root_value = self.treeSim(select_itr, select_size, h1_explore_eps=explore_eps, train_h2a=True)
                     dicts = D.split_dict(trans_dict, batch_size)
                     _Q, _mc, _ddpg = [], [], []
                     for dict in dicts:
@@ -585,13 +590,14 @@ class H2TreeTrainer:
                         _Q.append(Q_loss)
                         _mc.append(mc_loss)
                         _ddpg.append(ddpg_loss)
-                    loss_list["Q"].append(np.mean(_Q))
-                    loss_list["mc"].append(np.mean(_mc))
-                    loss_list["ddpg"].append(np.mean(_ddpg))
-                    loss_list["h2"].append(np.mean(h2loss))
+                    data_list["Q_loss"].append(np.mean(_Q))
+                    data_list["mc_loss"].append(np.mean(_mc))
+                    data_list["ddpg_loss"].append(np.mean(_ddpg))
+                    data_list["h2_loss"].append(np.mean(h2loss))
+                    data_list["true_value"].append(root_value)
 
                     progress.update(task, advance=1)
-        return loss_list
+        return data_list
     
     def h2Pretrain(self, epoch:int, episode:int, horizon=1200, states_num=256):
         Loss = []

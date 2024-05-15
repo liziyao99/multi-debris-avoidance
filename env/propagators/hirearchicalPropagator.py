@@ -34,15 +34,15 @@ class H2Propagator:
         '''
         raise NotImplementedError
     
-    def propagate(self, states:torch.Tensor, h1_actions:torch.Tensor, actions:torch.Tensor):
+    def propagate(self, states:torch.Tensor, h1_actions:torch.Tensor, actions:torch.Tensor, require_grad=False):
         '''
             returns: `next_states`, `next_obss`, `h1rewards`, `h2rewards`, `dones`, `terminal_rewards`
         '''
-        next_states = self.getNextStates(states, actions, require_grad=True)
-        h1rewards = self.getH1Rewards(states, h1_actions, actions)
-        h2rewards = self.getH2Rewards(states, h1_actions, actions, require_grad=True)
-        dones, terminal_rewards = self.getDones(next_states)
-        next_obss = self.getObss(next_states, require_grad=True)
+        next_states = self.getNextStates(states, actions, require_grad=require_grad)
+        h1rewards = self.getH1Rewards(states, h1_actions, actions, require_grad=require_grad)
+        h2rewards = self.getH2Rewards(states, h1_actions, actions, require_grad=require_grad)
+        dones, terminal_rewards = self.getDones(next_states, require_grad=require_grad)
+        next_obss = self.getObss(next_states, require_grad=require_grad)
         return next_states, next_obss, h1rewards, h2rewards, dones, terminal_rewards
     
     def randomInitStates(self, n:int) -> torch.Tensor:

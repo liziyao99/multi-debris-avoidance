@@ -104,4 +104,4 @@ if __name__ == "__main__":
     T = H2TreeTrainer(p, agent,)
     # T.h2Pretrain(10,10,512)
     T.agent.load("../model/h2.ptd")
-    T.train(1,100,10,64)
+    T.train(1,1,10,32)
