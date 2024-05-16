@@ -61,26 +61,6 @@ class stateNode(anytree.Node):
     def __str__(self) -> str:
         return f"gen:{self.gen} idx:{self.idx}"
     
-    def update_regret_mc(self):
-        nodes = list(self.descendants)
-        if not self.is_root:
-            nodes = [self] + nodes
-        for node in nodes:
-            node.regret_mc = node.parent.V_target - node.Q_target
-        return
-    
-    def update_regret_td(self, critic):
-        nodes = list(self.descendants)
-        if not self.is_root:
-            nodes = [self] + nodes
-        obss = [node.obs for node in nodes]
-        obss = np.vstack(obss)
-        obss = torch.from_numpy(obss).to(torch.float32).to(critic.device)
-        V_targets = critic(obss).detach().cpu().numpy().flatten()
-        for i in range(len(nodes)):
-            nodes[i].regret_mc = V_targets[i] - nodes[i].Q_target
-        return
-    
 class undoTree:
     def __init__(self, max_gen:int, state_dim, obs_dim, action_dim, gamma=0.95, act_explore_eps=0.2, select_explore_eps=0.2) -> None:
         self.max_gen = max_gen
@@ -187,10 +167,20 @@ class undoTree:
         return
     
     def update_regret_mc(self):
-        self.root.update_regret_mc()
+        nodes = self.nodes[1:] # exclude root
+        for node in nodes:
+            node.regret_mc = node.parent.V_target - node.Q_target
+        return
 
     def update_regret_td(self, critic):
-        self.root.update_regret_td(critic)
+        nodes = self.nodes[1:] # exclude root
+        obss = [node.obs for node in nodes]
+        obss = np.vstack(obss)
+        obss = torch.from_numpy(obss).to(torch.float32).to(critic.device)
+        V_targets = critic(obss).detach().cpu().numpy().flatten()
+        for i in range(len(nodes)):
+            nodes[i].regret_mc = V_targets[i] - nodes[i].Q_target
+        return
 
     def to_transdict(self):
         if self.N<1:

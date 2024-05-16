@@ -426,7 +426,7 @@ class planTrackTrainer:
                 break
         return trans_dict, min(i,horizon)
     
-def CWPTT(n_debris, device):
+def CWPTT(n_debris, device, load=""):
     mainProp = propagator.CWPlanTrackPropagator(n_debris)
     trackProp = propagatorT.CWPropagatorT(device=device)
     cub = torch.tensor([ 0.06]*3)
@@ -445,8 +445,10 @@ def CWPTT(n_debris, device):
                              plan_upper_bounds=pub,
                              plan_lower_bounds=plb,
                              device=device)
+    if load:
+        a.load(load)
     trainer = planTrackTrainer(mainProp, trackProp, a)
-    return trainer
+    return trainer, a
 
 from tree.undoTree import undoTree
 class H2TreeTrainer:
@@ -456,6 +458,10 @@ class H2TreeTrainer:
         self.prop = prop
         self.agent = agent
         self.tree = undoTree(prop.h1_step, prop.state_dim, prop.obs_dim, prop.h1_action_dim)
+
+    @property
+    def device(self):
+        return self.agent.device
 
     def h2Sim(self, states0:torch.Tensor, h1actions:torch.Tensor=None, h1noise=True, prop_with_grad=True):
         '''
@@ -614,7 +620,7 @@ class H2TreeTrainer:
                     obss = self.prop.getObss(states)
                     for t in range(horizon):
                         _, h2actions = self.agent.h2act(obss, h1actions)
-                        states, obss, _, h2rewards, _, _ = self.prop.propagate(states, h1actions, h2actions)
+                        states, obss, _, h2rewards, _, _ = self.prop.propagate(states, h1actions, h2actions, require_grad=True)
                         loss = loss - h2rewards.mean()
                     self.agent.h2a_opt.zero_grad()
                     loss.backward()
@@ -622,3 +628,163 @@ class H2TreeTrainer:
                     Loss.append(loss.item())
                     progress.update(task, advance=1)
         return Loss
+
+
+from env.dynamic import matrix
+class H2TreeTrainerAlter(H2TreeTrainer):
+    def __init__(self, prop: hirearchicalPropagator.H2CWDePropagator, agent: agent.H2Agent, tutor:agent.planTrackAgent, conGramMat_file="../model/conGramMat.npy") -> None:
+        super().__init__(prop, agent)
+
+        self.transfer_time = prop.dt*prop.h2_step
+        if conGramMat_file:
+            try:
+                conGramMat = np.load(conGramMat_file)
+            except:
+                conGramMat = matrix.CW_ConGramMat(self.transfer_time, prop.orbit_rad) # need numerical integral, time consumming!
+                np.save(conGramMat_file, conGramMat)
+        else:
+            conGramMat = matrix.CW_ConGramMat(self.transfer_time, prop.orbit_rad) # need numerical integral, time consumming!
+            np.save("../model/conGramMat.npy", conGramMat)
+        W_ = np.linalg.inv(conGramMat)
+        self.W_ = torch.from_numpy(W_).float().to(self.agent.device)
+        self.B = torch.vstack([torch.zeros([3,3]), torch.eye(3)]).to(self.agent.device)
+        Phi0 = matrix.CW_TransMat(0, self.transfer_time, prop.orbit_rad)
+        self.Phi0 = torch.from_numpy(Phi0).float().to(self.agent.device)
+
+        self.tutor = tutor
+
+    def transfer_u(self, states0, targets, step):
+        tau = self.prop.dt*step
+        Phi1 = matrix.CW_TransMat(tau, self.transfer_time, self.prop.orbit_rad)
+        Phi1 = torch.from_numpy(Phi1).float().to(self.device)
+        temp = -self.B.T@Phi1.T@self.W_
+        return (states0@self.Phi0.T-targets)@temp.T
+    
+    def tutor_obs(self, states):
+        batch_size = states.shape[0]
+        decoded = self.prop.statesDecode(states)
+        primal = decoded["primal"].squeeze(dim=1)
+        forecast_time = decoded["forecast_time"].reshape((batch_size, -1))
+        forecast_pos = decoded["forecast_pos"].reshape((batch_size, -1))
+        forecast_vel = decoded["forecast_vel"].reshape((batch_size, -1))
+        obss = torch.cat((primal, forecast_time, forecast_pos, forecast_vel), dim=1)
+        return obss
+
+    def h2Sim(self, states0:torch.Tensor, h1actions:torch.Tensor=None, h1noise=True, prop_with_grad=True):
+        '''
+            returns: `h2transdict`, `next_states`, `h2rewards`(with grad if `prop_with_grad`), `h1actions`, `h1rewards`, `dones`, `terminal_rewards`.
+        '''
+        batch_size = states0.shape[0]
+        trans_dict = D.init_transDictBatch(self.prop.h2_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h2_action_dim,
+                                           struct="torch", device=self.agent.device)
+        step = 0
+        done = False
+        done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.agent.device)
+        obss = self.prop.getObss(states0, require_grad=True)
+        
+        if h1actions is None:
+            _, h1actions = self.agent.h1act(obss)
+        if h1noise:
+            noise = self.agent.h1a.uniSample(batch_size)/30
+            h1actions = h1actions + noise
+        h1actions = self.agent.h1a.clip(h1actions)
+        targets = (h1actions+states0[:,:6]).detach() # increment control
+        
+        states = states0.clone()
+        next_states = states0.clone()
+        h1rewards = torch.zeros(batch_size, device=self.agent.device)
+        h2rewards = torch.zeros(batch_size, device=self.agent.device, requires_grad=prop_with_grad)
+        terminal_rewards = torch.zeros(batch_size, device=self.agent.device)
+        while not done and step<self.prop.h2_step:
+            trans_dict["states"][step,...] = states[...].detach()
+            trans_dict["obss"][step,...] = obss[...].detach()
+            primals = states[:,:6]
+            actions = self.transfer_u(primals, targets, step)
+            actions = self.agent.h2a.clip(actions)
+            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, targets, actions, require_grad=prop_with_grad)
+            terminal_rewards = torch.where(done_flags, terminal_rewards, trs)
+            next_states = torch.where(done_flags.unsqueeze(1), next_states, states)
+            done_flags = done_flags | dones
+            trans_dict["actions"][step,...] = actions[...].detach()
+            trans_dict["next_states"][step,...] = states[...].detach()
+            trans_dict["next_obss"][step,...] = obss[...].detach()
+            trans_dict["rewards"][step,...] = h2rs[...].detach()
+            trans_dict["dones"][step,...] = dones[...].detach()
+            h1rewards = h1rewards + h1rs*(~done_flags)
+            done = torch.all(dones)
+            step += 1
+        return trans_dict, next_states, h2rewards, h1actions, h1rewards, done_flags, terminal_rewards
+    
+    def tutorSim(self, states0, states_num=1):
+        if states0 is None:
+            states0 = self.prop.randomInitStates(states_num)
+        batch_size = states0.shape[0]
+        h1td = D.init_transDictBatch(self.prop.h1_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h1_action_dim,
+                                     items=("terminal_rewards",),
+                                     struct="torch", device=self.agent.device)
+        h2Loss = []
+        step = 0
+        done = False
+        done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.agent.device)
+        states = states0
+        obss = self.prop.getObss(states)
+        tutor_obss = self.tutor_obs(states)
+        tutor_targets, _ = self.tutor.track_target(tutor_obss)
+        while not done:
+            h1td["states"][step, ...] = states[...].detach()
+            h1td["obss"][step, ...] = obss[...].detach()
+
+            decoded = self.prop.statesDecode(states)
+            forecast_time = decoded["forecast_time"]
+            is_approaching = torch.sum(forecast_time, dim=1).to(torch.bool)
+            h1actions = torch.where(is_approaching, tutor_targets, torch.zeros_like(tutor_targets, device=self.device))
+            
+            _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, h1noise=False, prop_with_grad=False)
+            obss = self.prop.getObss(states)
+            h1td["actions"][step, ...] = h1as[...].detach()
+            h1td["next_states"][step, ...] = states[...].detach()
+            h1td["next_obss"][step, ...] = obss[...].detach()
+            h1td["rewards"][step, ...] = h1rs[...].detach()
+            h1td["dones"][step, ...] = dones[...].detach()
+            h1td["terminal_rewards"][step, ...] = trs[...].detach()
+
+            h2loss = -h2rs.mean()
+            h2Loss.append(h2loss)
+
+            done_flags = done_flags | dones
+            done = torch.all(done_flags)
+            step += 1
+        h2Loss = torch.mean(torch.stack(h2Loss))
+        return h1td, h2Loss
+
+    
+    def treeSim(self, select_itr:int, select_size:int, state0:torch.Tensor=None, h1_explore_eps=0., train_h2a=False):
+        '''
+            returns: `trans_dict`, `H2loss`, `root.V_target`
+        '''
+        if state0 is None:
+            state0 = self.prop.randomInitStates(1)
+        self.tree.reset_root(state0[0].detach().cpu().numpy(), self.prop.getObss(state0)[0].detach().cpu().numpy())
+        
+        # imitate learning
+        h1td, _ = self.tutorSim(state0)
+        h1td = D.numpy_dict(h1td)
+        tds = D.deBatch_dict(h1td)
+        for d in tds:
+            self.tree.new_traj(0, 0, d)
+        
+        H2loss = []
+        for i in range(select_itr):
+            states, idx_pairs = self.tree.select(select_size)
+            states = np.vstack(states)
+            states = torch.from_numpy(states).float().to(self.agent.device)
+            h1td, h2loss = self.h1Sim(states, h1_explore_eps, train_h2a=train_h2a)
+            h1td = D.numpy_dict(h1td)
+            tds = D.deBatch_dict(h1td)
+            for j in range(select_size):
+                self.tree.new_traj(idx_pairs[j][0], idx_pairs[j][1], tds[j])
+            H2loss.append(h2loss)
+            self.tree.backup()
+            self.tree.update_regret_mc()
+        trans_dict = self.tree.to_transdict()
+        return trans_dict, H2loss, self.tree.root.V_target

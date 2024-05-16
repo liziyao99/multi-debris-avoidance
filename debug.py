@@ -82,26 +82,23 @@ def debug3(batch_size=256, horizon=600, episode=100):
 if __name__ == "__main__":
     from env.propagators.hirearchicalPropagator import H2CWDePropagator
     from agent.agent import H2Agent
-    from trainer.trainer import H2TreeTrainer
-    p = H2CWDePropagator(3, device="cuda")
+    from trainer.trainer import H2TreeTrainer, H2TreeTrainerAlter
+    from trainer.mpTrainer_ import mpH2Trainer
+    import data.buffer
     h1out_ub = [ 1000]*3 + [ 3.6]*3
     h1out_lb = [-1000]*3 + [-3.6]*3
     h2out_ub = [ 0.06]*3
     h2out_lb = [-0.06]*3
-    agent = H2Agent(obs_dim=p.obs_dim,
-                    h1obs_dim=p.obs_dim,
-                    h2obs_dim=6, 
-                    h1out_dim=p.h1_action_dim, 
-                    h2out_dim=p.h2_action_dim, 
-                    h1a_hiddens=[512], 
-                    h2a_hiddens=[512]*8, 
-                    h1c_hiddens=[512]*8,
-                    h1out_ub=h1out_ub, 
-                    h1out_lb=h1out_lb, 
-                    h2out_ub=h2out_ub, 
-                    h2out_lb=h2out_lb, 
-                    device="cuda")
-    T = H2TreeTrainer(p, agent,)
-    # T.h2Pretrain(10,10,512)
-    T.agent.load("../model/h2.ptd")
-    T.train(1,1,10,32)
+    agentArgs = {"h1a_hiddens": [512]*8, 
+                "h2a_hiddens": [512]*8, 
+                "h1c_hiddens": [512]*8,
+                "h1out_ub": h1out_ub, 
+                "h1out_lb": h1out_lb, 
+                "h2out_ub": h2out_ub, 
+                "h2out_lb": h2out_lb, }
+    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
+                "dones", "Q_targets", "V_targets", "regret_mc"]
+    buffer = data.buffer.replayBuffer(buffer_keys, capacity=100000, batch_size=640)
+    mt = mpH2Trainer(n_process=1, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
+                    select_itr=16, select_size=16, batch_size=4096, main_device="cuda", mode="alter")
+    mt.debug()

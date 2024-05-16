@@ -105,6 +105,7 @@ class mpTrainer:
     
     def debug1p(self):
         self._reset_workers()
+        self.pull(0)
         inq = mp.Queue()
         outq = mp.Queue()
         inq.put(1)
@@ -132,23 +133,28 @@ class mpH2Worker(mpWorker):
     
 class mpH2Trainer(mpTrainer):
     def __init__(self, n_process:int, buffer:replayBuffer, n_debris:int, agentArgs:dict, 
-                 select_itr=10, select_size=32, main_device="cuda", batch_size=640):
+                 select_itr=10, select_size=32, batch_size=640, main_device="cuda", mode="default"):
+        if mode not in ["default", "alter"]:
+            raise ValueError("mode must be \"default\" or \"alter\"")
+        self.mode = mode
         self.n_debris = n_debris
         self.main_device = main_device
         self.agentArgs = agentArgs
         self.select_itr = select_itr
         self.select_size = select_size
         
+        self.main_initialized = False
         self.main_trainer = self._init_trainer(main_device)
+        self.main_initialized = True
 
         self.n_process = n_process
         self.workers = []
         self._reset_workers()
         self.buffer = buffer
         
-        self.batch_size = 640
+        self.batch_size = batch_size
 
-    def _init_trainer(self, device="cpu"):
+    def _init_trainer(self, device="cpu",):
         p = env.propagators.hirearchicalPropagator.H2CWDePropagator(self.n_debris, device=device)
         agent = A.H2Agent(obs_dim=p.obs_dim,
                           h1obs_dim=p.obs_dim,
@@ -157,7 +163,11 @@ class mpH2Trainer(mpTrainer):
                           h2out_dim=p.h2_action_dim, 
                           device=device,
                           **self.agentArgs)
-        return trainer.trainer.H2TreeTrainer(p, agent)
+        if self.mode=="default":
+            return trainer.trainer.H2TreeTrainer(p, agent)
+        elif self.mode=="alter":
+            _, tutor = trainer.trainer.CWPTT(self.n_debris, agent.device, "../model/planTrack3.ptd")
+            return trainer.trainer.H2TreeTrainerAlter(p, agent, tutor)
     
     def _reset_workers(self):
         for w in self.workers:
@@ -172,6 +182,10 @@ class mpH2Trainer(mpTrainer):
         self.agents[idx].h1a.load_state_dict(self.main_agent.h1a.state_dict())
         self.agents[idx].h1c.load_state_dict(self.main_agent.h1c.state_dict())
         self.agents[idx].h2a.load_state_dict(self.main_agent.h2a.state_dict())
+        if self.mode=="alter":
+            self.workers[idx].trainer.tutor.planner.load_state_dict(self.main_trainer.tutor.planner.state_dict())
+            self.workers[idx].trainer.tutor.critic.load_state_dict(self.main_trainer.tutor.critic.state_dict())
+            self.workers[idx].trainer.tutor.tracker.load_state_dict(self.main_trainer.tutor.tracker.state_dict())
     
     def train(self, n_epoch:int, total_episode:int, folder="../model/", sim_kwargs:dict=None):
         if sim_kwargs is not None:
@@ -222,3 +236,14 @@ class mpH2Trainer(mpTrainer):
                 self.main_trainer.agent.save(folder+f"check_point{i}.ptd")
                 self._reset_workers()
         return
+    
+    def debug(self):
+        trans_dict, v = self.debug1p()
+        trans_dicts = D.split_dict(trans_dict, batch_size=self.batch_size)
+        _Q, _mc, _ddpg = [], [], []
+        for dict in trans_dicts:
+            Q_l, mc_l, ddpg_l = self.main_agent.h1update(dict)
+            _Q.append(Q_l)
+            _mc.append(mc_l)
+            _ddpg.append(ddpg_l)
+        return v, np.mean(_Q), np.mean(_mc), np.mean(_ddpg)
