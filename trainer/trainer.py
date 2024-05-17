@@ -690,6 +690,7 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         h1actions = self.agent.h1a.clip(h1actions)
         targets = (h1actions+states0[:,:6]).detach() # increment control
         
+        primals0 = states0[:,:6]
         states = states0.clone()
         next_states = states0.clone()
         h1rewards = torch.zeros(batch_size, device=self.agent.device)
@@ -698,8 +699,7 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         while not done and step<self.prop.h2_step:
             trans_dict["states"][step,...] = states[...].detach()
             trans_dict["obss"][step,...] = obss[...].detach()
-            primals = states[:,:6]
-            actions = self.transfer_u(primals, targets, step)
+            actions = self.transfer_u(primals0, targets, step)
             actions = self.agent.h2a.clip(actions)
             states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, targets, actions, require_grad=prop_with_grad)
             terminal_rewards = torch.where(done_flags, terminal_rewards, trs)
@@ -713,6 +713,7 @@ class H2TreeTrainerAlter(H2TreeTrainer):
             h1rewards = h1rewards + h1rs*(~done_flags)
             done = torch.all(dones)
             step += 1
+        delta_states = next_states - states0
         return trans_dict, next_states, h2rewards, h1actions, h1rewards, done_flags, terminal_rewards
     
     def tutorSim(self, states0, states_num=1):
@@ -730,14 +731,15 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         obss = self.prop.getObss(states)
         tutor_obss = self.tutor_obs(states)
         tutor_targets, _ = self.tutor.track_target(tutor_obss)
-        while not done:
+        while not done and step<self.prop.h1_step:
             h1td["states"][step, ...] = states[...].detach()
             h1td["obss"][step, ...] = obss[...].detach()
 
             decoded = self.prop.statesDecode(states)
             forecast_time = decoded["forecast_time"]
-            is_approaching = torch.sum(forecast_time, dim=1).to(torch.bool)
-            h1actions = torch.where(is_approaching, tutor_targets, torch.zeros_like(tutor_targets, device=self.device))
+            is_approaching = torch.sum(forecast_time>0, dim=1).to(torch.bool)
+            targets = torch.where(is_approaching, tutor_targets, torch.zeros_like(tutor_targets, device=self.device))
+            h1actions = targets - states[:,:6] # increment control
             
             _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, h1noise=False, prop_with_grad=False)
             obss = self.prop.getObss(states)
