@@ -532,8 +532,8 @@ class H2Agent(boundedRlAgent):
         actions = self.h1a(trans_dict["obss"])
         ddpg_loss = torch.mean(-self.Q(trans_dict["obss"], actions))
         self.h1a_opt.zero_grad()
-        ddpg_loss.backward()
-        self.h1a_opt.step()
+        # ddpg_loss.backward()
+        # self.h1a_opt.step()
 
         return Q_loss.item(), mc_loss.item(), ddpg_loss.item()
 

@@ -632,19 +632,18 @@ class H2TreeTrainer:
 
 from env.dynamic import matrix
 class H2TreeTrainerAlter(H2TreeTrainer):
-    def __init__(self, prop: hirearchicalPropagator.H2CWDePropagator, agent: agent.H2Agent, tutor:agent.planTrackAgent, conGramMat_file="../model/conGramMat.npy") -> None:
+    def __init__(self, prop: hirearchicalPropagator.H2CWDePropagator, agent: agent.H2Agent, tutor:agent.planTrackAgent, 
+                 conGramMat_file=None) -> None:
         super().__init__(prop, agent)
 
         self.transfer_time = prop.dt*prop.h2_step
-        if conGramMat_file:
-            try:
-                conGramMat = np.load(conGramMat_file)
-            except:
-                conGramMat = matrix.CW_ConGramMat(self.transfer_time, prop.orbit_rad) # need numerical integral, time consumming!
-                np.save(conGramMat_file, conGramMat)
-        else:
+        if conGramMat_file is None:
+            conGramMat_file = f"../model/conGramMat{int(self.transfer_time)}.npy"
+        try:
+            conGramMat = np.load(conGramMat_file)
+        except:
             conGramMat = matrix.CW_ConGramMat(self.transfer_time, prop.orbit_rad) # need numerical integral, time consumming!
-            np.save("../model/conGramMat.npy", conGramMat)
+            np.save(conGramMat_file, conGramMat)
         W_ = np.linalg.inv(conGramMat)
         self.W_ = torch.from_numpy(W_).float().to(self.agent.device)
         self.B = torch.vstack([torch.zeros([3,3]), torch.eye(3)]).to(self.agent.device)

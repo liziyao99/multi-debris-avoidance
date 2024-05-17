@@ -155,7 +155,8 @@ class mpH2Trainer(mpTrainer):
         self.batch_size = batch_size
 
     def _init_trainer(self, device="cpu",):
-        p = env.propagators.hirearchicalPropagator.H2CWDePropagator(self.n_debris, device=device)
+        p = env.propagators.hirearchicalPropagator.H2CWDePropagator(self.n_debris, device=device, 
+                                                                    h1_step=10, h2_step=360)
         agent = A.H2Agent(obs_dim=p.obs_dim,
                           h1obs_dim=p.obs_dim,
                           h2obs_dim=6, 
@@ -234,7 +235,8 @@ class mpH2Trainer(mpTrainer):
                         mc_loss = mc_loss
                         )
                 plot.save_fig(folder+"log.png")
-                self.main_trainer.agent.save(folder+f"check_point{i}.ptd")
+                #self.main_trainer.agent.save(folder+f"check_point{i}.ptd")
+                self.main_trainer.agent.save(folder+"check_point.ptd")
                 self._reset_workers()
         return
     
