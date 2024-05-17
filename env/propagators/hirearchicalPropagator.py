@@ -196,7 +196,7 @@ class H2CWDePropagator(H2Propagator):
     
     def getH1Rewards(self, states: torch.Tensor, h1_actions:torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:
         with torch.set_grad_enabled(require_grad):
-            rewards = (self.h1r_maxfuel-torch.norm(actions, dim=-1))/self.h1r_maxfuel
+            rewards = (self.h1r_maxfuel-torch.norm(actions, dim=-1))/(self.h1r_maxfuel*self.h2_step)
             return rewards
         
     def getH2Rewards(self, states: torch.Tensor, h1_actions: torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:

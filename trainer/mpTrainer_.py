@@ -133,7 +133,7 @@ class mpH2Worker(mpWorker):
     
 class mpH2Trainer(mpTrainer):
     def __init__(self, n_process:int, buffer:replayBuffer, n_debris:int, agentArgs:dict, 
-                 select_itr=10, select_size=32, batch_size=640, main_device="cuda", mode="default"):
+                 select_itr=10, select_size=32, batch_size=2048, main_device="cuda", mode="default"):
         if mode not in ["default", "alter"]:
             raise ValueError("mode must be \"default\" or \"alter\"")
         self.mode = mode
@@ -190,10 +190,10 @@ class mpH2Trainer(mpTrainer):
     def train(self, n_epoch:int, total_episode:int, folder="../model/", sim_kwargs:dict=None):
         if sim_kwargs is not None:
             for w in self.workers: w.sim_kwargs = sim_kwargs
-        plot = dataPlot(["true_values", "Q_loss", "ddpg_loss", "mc_loss"])
+        plot = dataPlot(["true_values", "critic_loss", "ddpg_loss", "mc_loss"])
         with rich.progress.Progress() as pbar:
             task1 = pbar.add_task("", total=total_episode)
-            Q_loss, ddpg_loss, mc_loss, true_values = [], [], [], []
+            critic_loss, ddpg_loss, mc_loss, true_values = [], [], [], []
             for i in range(n_epoch):
                 pbar.tasks[task1].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 pbar.tasks[task1].completed = 0
@@ -206,6 +206,7 @@ class mpH2Trainer(mpTrainer):
                         if (obj := outq.get()) is not None:
                             trans_dict = obj[0]
                             v = obj[1]
+                            self.buffer.from_dict(trans_dict)
                             trans_dicts = D.split_dict(trans_dict, batch_size=self.batch_size)
                             _Q, _mc, _ddpg = [], [], []
                             for dict in trans_dicts:
@@ -213,12 +214,12 @@ class mpH2Trainer(mpTrainer):
                                 _Q.append(Q_l)
                                 _mc.append(mc_l)
                                 _ddpg.append(ddpg_l)
-                            Q_loss.append(np.mean(_Q))
+                            critic_loss.append(np.mean(_Q))
                             ddpg_loss.append(np.mean(_ddpg))
                             mc_loss.append(np.mean(_mc))
                             true_values.append(v)
                             if pbar.tasks[task1].completed > plot.min_window_size:
-                                plot.set_data((true_values, Q_loss, ddpg_loss, mc_loss))
+                                plot.set_data((true_values, critic_loss, ddpg_loss, mc_loss))
                             pbar.update(task1, advance=1)
                         else:
                             count += 1
@@ -228,7 +229,7 @@ class mpH2Trainer(mpTrainer):
                 [w.join() for w in self.workers]
                 np.savez(folder+"log.npz", 
                         true_values = true_values,
-                        Q_loss = Q_loss,
+                        critic_loss = critic_loss,
                         ddpg_loss = ddpg_loss,
                         mc_loss = mc_loss
                         )
