@@ -37,7 +37,7 @@ class mpWorker(mp.Process):
             obj = self.simulate(**self.sim_kwargs)
             self.outq.put(obj)
         self.outq.put(None)
-        print(f"{self.name} done")
+        print(f"{self.name} done.")
 
     def setQ(self, inq:mp.Queue=None, outq:mp.Queue=None):
         self.inq = inq if inq is not None else self.inq
@@ -128,7 +128,7 @@ class mpH2Worker(mpWorker):
         self.sim_kwargs = sim_kwargs
 
     def simulate(self, select_itr:int, select_size:int):
-        trans_dict, _, v = self.trainer.treeSim(select_itr, select_size, train_h2a=False)
+        trans_dict, _, v = self.trainer.treeSim(select_itr, select_size, h1_explore_eps=0.2, train_h2a=False)
         return trans_dict, v
     
 class mpH2Trainer(mpTrainer):

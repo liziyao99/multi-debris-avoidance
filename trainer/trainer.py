@@ -457,7 +457,7 @@ class H2TreeTrainer:
                  agent:agent.H2Agent,) -> None:
         self.prop = prop
         self.agent = agent
-        self.tree = undoTree(prop.h1_step, prop.state_dim, prop.obs_dim, prop.h1_action_dim)
+        self.tree = undoTree(prop.h1_step, prop.state_dim, prop.obs_dim, prop.h1_action_dim, gamma=agent.gamma)
 
     @property
     def device(self):
@@ -684,7 +684,7 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         if h1actions is None:
             _, h1actions = self.agent.h1act(obss)
         if h1noise:
-            noise = self.agent.h1a.uniSample(batch_size)/30
+            noise = self.agent.h1a.uniSample(batch_size)/10
             h1actions = h1actions + noise
         h1actions = self.agent.h1a.clip(h1actions)
         targets = (h1actions+states0[:,:6]).detach() # increment control

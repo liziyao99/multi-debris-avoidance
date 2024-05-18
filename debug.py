@@ -101,4 +101,9 @@ if __name__ == "__main__":
     buffer = data.buffer.replayBuffer(buffer_keys, capacity=100000, batch_size=640)
     mt = mpH2Trainer(n_process=1, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
                     select_itr=16, select_size=16, batch_size=4096, main_device="cuda", mode="alter")
-    mt.debug()
+    from agent.agent import SAC
+    prop = mt.main_trainer.prop
+    sac = SAC(prop.obs_dim, prop.h1_action_dim, 0.06, 10,)
+    h1td, _ = mt.main_trainer.tutorSim(None)
+    td = D.deBatch_dict(h1td)[0]
+    sac.update(td)

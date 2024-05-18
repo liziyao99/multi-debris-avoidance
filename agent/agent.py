@@ -2,6 +2,7 @@ from agent.net import *
 import data.dicts as D
 
 import typing
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -401,6 +402,7 @@ class H2Agent(boundedRlAgent):
                  h1a_lr=1e-5, 
                  h2a_lr=1e-4, 
                  h1c_lr=1e-4, 
+                 gamma=0.95,
                  device=None
                 ) -> None:
         self.obs_dim = obs_dim
@@ -410,6 +412,8 @@ class H2Agent(boundedRlAgent):
         self.h2out_dim = h2out_dim
         self.pad_dim = h1pad_dim
         self.h1h2_dim = h1out_dim+h1pad_dim
+
+        self.gamma = gamma
 
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -462,7 +466,7 @@ class H2Agent(boundedRlAgent):
         return self.h1c_opt
 
     def act(self, obss:torch.Tensor):
-        pass
+        return self.h1act(obss)
 
     def h1obs_preprocess(self, obss:torch.Tensor):
         return obss.to(self.device)
@@ -516,6 +520,9 @@ class H2Agent(boundedRlAgent):
             returns: `Q_loss`, `mc_loss`, `ddpg_loss`.
         '''
         trans_dict = D.torch_dict(trans_dict, device=self.device)
+        rewards = trans_dict["rewards"].reshape((-1, 1))
+        dones = trans_dict["dones"].reshape((-1, 1))
+        terminal_rewards = trans_dict["terminal_rewards"].reshape((-1, 1))
 
         Q_values = self.Q(trans_dict["obss"], trans_dict["actions"])
         Q_loss = F.mse_loss(Q_values, trans_dict["Q_targets"].reshape(Q_values.shape))
@@ -523,17 +530,122 @@ class H2Agent(boundedRlAgent):
         Q_loss.backward()
         self.Q_opt.step()
 
+        # Q_values = self.Q(trans_dict["obss"], trans_dict["actions"])
+        # next_Q_values = self.Q(trans_dict["next_obss"], self.h1a(trans_dict["next_obss"]))*(~dones) + terminal_rewards*dones
+        # next_Q_values = next_Q_values.detach()
+        # td_Q_targets = rewards + self.gamma*next_Q_values
+        # Q_loss = F.mse_loss(Q_values, td_Q_targets)
+        # self.Q_opt.zero_grad()
+        # Q_loss.backward()
+        # self.Q_opt.step()
+
         actions = self.h1a(trans_dict["obss"])
         mc_loss = torch.mean(-trans_dict["regret_mc"]*torch.norm(actions-trans_dict["actions"],dim=-1))
         self.h1a_opt.zero_grad()
         mc_loss.backward()
-        self.h1a_opt.step()
+        # self.h1a_opt.step()
 
         actions = self.h1a(trans_dict["obss"])
         ddpg_loss = torch.mean(-self.Q(trans_dict["obss"], actions))
-        self.h1a_opt.zero_grad()
-        # ddpg_loss.backward()
-        # self.h1a_opt.step()
+        # self.h1a_opt.zero_grad()
+        ddpg_loss.backward()
+        self.h1a_opt.step()
 
         return Q_loss.item(), mc_loss.item(), ddpg_loss.item()
 
+
+class SAC(boundedRlAgent):
+    def __init__(self, 
+                 obs_dim: int, 
+                 action_dim: int, 
+                 action_bound:float, 
+                 sigma_upper_bound=1.,
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 critic_hiddens: typing.List[int] = [128] * 5, 
+                 actor_lr=0.00001, 
+                 critic_lr=0.0001, 
+                 alpha_lr=0.00001,
+                 target_entropy=-1.,
+                 gamma=0.99,
+                 tau=0.005,
+                 device=None) -> None:
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        self._init_actor(actor_hiddens, action_bound, sigma_upper_bound, actor_lr)
+        self._init_critic(critic_hiddens, critic_lr)
+        self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float)
+        self.log_alpha.requires_grad = True
+        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
+        self.target_entropy = target_entropy
+        self.gamma = gamma
+        self.tau = tau
+
+    def _init_actor(self, hiddens, action_bound, sigma_upper_bound, lr):
+        self.actor = tanhNormalDistNet(self.obs_dim, self.action_dim, hiddens, action_bound, sigma_upper_bound).to(self.device)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+
+    def _init_critic(self, hiddens, lr):
+        self.critic1 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
+        self.critic1_opt = torch.optim.Adam(self.critic1.parameters(), lr=lr)
+        self.critic2 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
+        self.critic2_opt = torch.optim.Adam(self.critic2.parameters(), lr=lr)
+        self.target_critic1 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
+        self.target_critic1.load_state_dict(self.critic1.state_dict())
+        self.target_critic2 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
+        self.target_critic2.load_state_dict(self.critic2.state_dict())
+
+    def QMin(self, obss, actions, target=False):
+        obss = obss.to(self.device)
+        actions = actions.to(self.device)
+        if target:
+            q1 = self.target_critic1(obss, actions)
+            q2 = self.target_critic2(obss, actions)
+        else:
+            q1 = self.critic1(obss, actions)
+            q2 = self.critic2(obss, actions)
+        return torch.min(q1, q2)
+    
+    def QEntropy(self, obss, actions, entropy, target=False):
+        obss = obss.to(self.device)
+        actions = actions.to(self.device)
+        return self.log_alpha.exp()*entropy+self.QMin(obss, actions, target=target)
+
+    def soft_update(self, net, target_net):
+        for param_target, param in zip(target_net.parameters(), net.parameters()):
+            param_target.data.copy_(param_target.data*(1.0-self.tau) + param.data*self.tau)
+
+    def update(self, trans_dict):
+        trans_dict = D.torch_dict(trans_dict, device=self.device)
+        rewards = trans_dict["rewards"].reshape((-1, 1))
+        dones = trans_dict["dones"].reshape((-1, 1))
+
+        next_actions, next_log_probs = self.actor.tanh_sample(trans_dict["next_obss"])
+        entropy = -torch.sum(next_log_probs, dim=-1, keepdim=True)
+        next_QEntropy = self.QEntropy(trans_dict["next_obss"], next_actions, entropy, target=True)
+        td_targets = rewards + self.gamma*next_QEntropy*(~dones)
+        critic1_loss = F.mse_loss(self.critic1(trans_dict["obss"], trans_dict["actions"]), td_targets.detach())
+        critic2_loss = F.mse_loss(self.critic2(trans_dict["obss"], trans_dict["actions"]), td_targets.detach())
+        self.critic1_opt.zero_grad()
+        critic1_loss.backward()
+        self.critic1_opt.step()
+        self.critic2_opt.zero_grad()
+        critic2_loss.backward()
+        self.critic2_opt.step()
+
+        new_actions, new_log_probs = self.actor.tanh_sample(trans_dict["obss"])
+        entropy = -torch.sum(new_log_probs, dim=-1, keepdim=True)
+        new_QEntropy = self.QEntropy(trans_dict["obss"], new_actions, entropy, target=False)
+        actor_loss = -new_QEntropy.mean()
+        self.actor_opt.zero_grad()
+        actor_loss.backward()
+        self.actor_opt.step()
+
+        alpha_loss = -torch.mean((new_log_probs+self.target_entropy).detach()*self.log_alpha.exp())
+        self.log_alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.log_alpha_optimizer.step()
+
+        self.soft_update(self.critic1, self.target_critic1)
+        self.soft_update(self.critic2, self.target_critic2)
+    

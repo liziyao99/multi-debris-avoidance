@@ -87,8 +87,8 @@ class H2CWDePropagator(H2Propagator):
         self.h2r_vel_coef = 1.
         self.h2r_pos_err_thrus = 10.
 
-        self.fail_penalty_coef = -0.06
-        self.err_penalty_coef = -1/max_dist
+        self.fail_penalty_coef = -2.
+        self.err_penalty_coef = -2/max_dist
 
     def statesDecode(self, states:torch.Tensor, require_grad=False):
         '''
@@ -236,7 +236,7 @@ class H2CWDePropagator(H2Propagator):
             collision = torch.sum(d2d<self.safe_dist, dim=1).to(torch.bool)
             dones = time_out+out_dist+collision
             terminal_rewards = torch.zeros_like(dones, dtype=torch.float32)
-            fail_penalty = self.fail_penalty_coef*self.h1_step*self.h2_step*self.dt
+            fail_penalty = self.fail_penalty_coef*self.h1_step
             terminal_rewards = torch.where(out_dist+collision, fail_penalty, terminal_rewards)
             err_penalty = self.err_penalty_coef*d2o.flatten()
             terminal_rewards = torch.where(time_out, err_penalty, terminal_rewards)

@@ -186,7 +186,7 @@ class undoTree:
         if self.N<1:
             raise(ValueError("tree must have at least one non-root node."))
         trans_dict = D.init_transDict(self.N-1, self.state_dim, self.obs_dim, self.action_dim,
-                                      items=("Q_targets", "V_targets", "regret_mc"))
+                                      items=("Q_targets", "V_targets", "regret_mc", "terminal_rewards"))
         for i in range(self.N-1):
             node = self.nodes[i+1]
             trans_dict["states"][i,:] = node.parent.state
@@ -199,6 +199,7 @@ class undoTree:
             trans_dict["Q_targets"][i] = node.Q_target
             trans_dict["V_targets"][i] = node.parent.V_target
             trans_dict["regret_mc"][i] = node.regret_mc
+            trans_dict["terminal_rewards"][i] = node.terminal_reward
         return trans_dict
 
     def select(self, size, mode="uniform"):

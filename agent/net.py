@@ -136,6 +136,52 @@ class normalDistNet(boundedFcNet):
         x = x.clamp(self.obc.lower_bounds[:self.n_sample], self.obc.upper_bounds[:self.n_sample])
         return x
     
+class tanhNormalDistNet(normalDistNet):
+    def __init__(self, 
+                 n_feature: int, 
+                 n_sample: int, 
+                 n_hiddens: torch.List[int], 
+                 action_bound: float, 
+                 sigma_upper_bound: float,
+                 ):
+        upper_bounds = [ torch.inf]*n_sample+[sigma_upper_bound]*n_sample
+        lower_bounds = [-torch.inf]*n_sample+[1e-7]*n_sample
+        super().__init__(n_feature, n_sample, n_hiddens, upper_bounds, lower_bounds)
+        self.action_bound = action_bound
+
+    def sample(self, output:torch.Tensor):
+        '''
+            sample from normal dist, output are mean and var.
+        '''
+        normal_sample = self.distribution(output).rsample()
+        return self.contract(normal_sample)
+
+    def contract(self, normal_sample:torch.Tensor):
+        contracted = torch.tanh(normal_sample)
+        action = self.action_bound*contracted
+        return action
+    
+    def tanh_log_prob(self, output:torch.Tensor, normal_sample:torch.Tensor):
+        '''
+            log prob of tanh normal dist.
+        '''
+        contracted = torch.tanh(normal_sample)
+        log_prob = self.distribution(output).log_prob(normal_sample)
+        log_prob = log_prob - torch.log(1-torch.tanh(contracted)**2+1e-7)
+        # action = self.action_bound*contracted
+        return log_prob
+    
+    def tanh_sample(self, obss):
+        '''
+            returns: `actions`, `tanh_log_probs`
+        '''
+        outputs = self.forward(obss)
+        normal_dist = self.distribution(outputs)
+        normal_samples = normal_dist.rsample()
+        actions = self.contract(normal_samples)
+        tanh_log_probs = self.tanh_log_prob(outputs, normal_samples)
+        return actions, tanh_log_probs
+    
 
 class trackNet(boundedFcNet):
     def __init__(self, 
