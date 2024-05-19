@@ -79,34 +79,25 @@ def debug3(batch_size=256, horizon=600, episode=100):
     states = prop.randomInitStates(10)
     obss = prop.getObss(states)
 
+def gym():
+    from trainer.myGym.gymTrainer import gymSAC, gymDDPG
+    # gs = gymSAC('Pendulum-v1')
+    gd = gymDDPG('Pendulum-v1')
+    tr, cl ,al = gd.train(1, 10)
+
 if __name__ == "__main__":
-    from env.propagators.hirearchicalPropagator import H2CWDePropagator
-    from agent.agent import H2Agent
-    from trainer.trainer import H2TreeTrainer, H2TreeTrainerAlter
-    from trainer.mpTrainer_ import mpH2Trainer
-    import data.buffer
-    h1out_ub = [ 1000]*3 + [ 3.6]*3
-    h1out_lb = [-1000]*3 + [-3.6]*3
-    h2out_ub = [ 0.06]*3
-    h2out_lb = [-0.06]*3
-    agentArgs = {"h1a_hiddens": [512]*8, 
-                "h2a_hiddens": [512]*8, 
-                "h1c_hiddens": [512]*8,
-                "h1out_ub": h1out_ub, 
-                "h1out_lb": h1out_lb, 
-                "h2out_ub": h2out_ub, 
-                "h2out_lb": h2out_lb, }
-    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
-                "dones", "Q_targets", "V_targets", "regret_mc"]
-    buffer = data.buffer.replayBuffer(buffer_keys, capacity=100000, batch_size=640)
-    mt = mpH2Trainer(n_process=1, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
-                    select_itr=16, select_size=16, batch_size=4096, main_device="cuda", mode="alter")
-    from agent.agent import SAC
-    prop = mt.main_trainer.prop
-    action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
-    sigma_bounds=  [1e2]*6
-    sac = SAC(prop.obs_dim, prop.h1_action_dim, action_bounds, sigma_bounds,)
-    mt.debug()
-    h1td, _ = mt.main_trainer.tutorSim(None)
-    td = D.deBatch_dict(h1td)[0]
-    sac.update(td)
+    # from trainer.mpTrainer_ import mpH2Trainer
+    # import data.buffer
+    # action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
+    # sigma_bounds=  [1e2]*6
+    # agentArgs = {"actor_hiddens": [640]*14, 
+    #             "critic_hiddens": [640]*14,
+    #             "action_bounds": action_bounds,
+    #             "sigma_upper_bounds": sigma_bounds }
+    # buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
+    #             "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
+    # buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
+    # mt = mpH2Trainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
+    #                 select_itr=2, select_size=100, batch_size=1024, main_device="cuda", mode="SAC")
+    # mt.debug()
+    gym()

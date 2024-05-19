@@ -127,8 +127,8 @@ class mpH2Worker(mpWorker):
         self.outq = outq
         self.sim_kwargs = sim_kwargs
 
-    def simulate(self, select_itr:int, select_size:int):
-        trans_dict, _, v = self.trainer.treeSim(select_itr, select_size, h1_explore_eps=0.2, train_h2a=False)
+    def simulate(self, select_itr:int, select_size:int, **kwargs):
+        trans_dict, _, v = self.trainer.treeSim(select_itr, select_size, train_h2a=False, **kwargs)
         return trans_dict, v
     
 class mpH2Trainer(mpTrainer):
@@ -158,17 +158,24 @@ class mpH2Trainer(mpTrainer):
     def _init_trainer(self, device="cpu",):
         p = env.propagators.hirearchicalPropagator.H2CWDePropagator(self.n_debris, device=device, 
                                                                     h1_step=10, h2_step=360)
-        agent = A.H2Agent(obs_dim=p.obs_dim,
+        _, tutor = trainer.trainer.CWPTT(self.n_debris, device, "../model/planTrack3.ptd")
+        if self.mode=="default":
+            agent = A.H2Agent(obs_dim=p.obs_dim,
                           h1obs_dim=p.obs_dim,
                           h2obs_dim=6, 
                           h1out_dim=p.h1_action_dim, 
                           h2out_dim=p.h2_action_dim, 
                           device=device,
                           **self.agentArgs)
-        _, tutor = trainer.trainer.CWPTT(self.n_debris, agent.device, "../model/planTrack3.ptd")
-        if self.mode=="default":
             return trainer.trainer.H2TreeTrainer(p, agent)
         if self.mode=="alter":
+            agent = A.H2Agent(obs_dim=p.obs_dim,
+                          h1obs_dim=p.obs_dim,
+                          h2obs_dim=6, 
+                          h1out_dim=p.h1_action_dim, 
+                          h2out_dim=p.h2_action_dim, 
+                          device=device,
+                          **self.agentArgs)
             return trainer.trainer.H2TreeTrainerAlter(p, agent, tutor)
         if self.mode=="SAC":
             agent = A.SAC(obs_dim=p.obs_dim,
@@ -204,7 +211,7 @@ class mpH2Trainer(mpTrainer):
             self.agents[idx].critic2.load_state_dict(self.main_agent.critic2.state_dict())
             self.agents[idx].target_critic1.load_state_dict(self.main_agent.target_critic1.state_dict())
             self.agents[idx].target_critic2.load_state_dict(self.main_agent.target_critic2.state_dict())
-            self.agents[idx].log_alpha[...] = self.main_agent.log_alpha[...]
+            self.agents[idx].log_alpha = self.main_agent.log_alpha.detach().to(self.agents[idx].log_alpha)
     
     def train(self, n_epoch:int, total_episode:int, folder="../model/", sim_kwargs:dict=None):
         if sim_kwargs is not None:
@@ -229,7 +236,7 @@ class mpH2Trainer(mpTrainer):
                             trans_dicts = D.split_dict(trans_dict, batch_size=self.batch_size)
                             _Q, _mc, _ddpg = [], [], []
                             for dict in trans_dicts:
-                                Q_l, mc_l, ddpg_l = self.main_agent.h1update(dict)
+                                Q_l, mc_l, ddpg_l = self.main_agent.update(dict)
                                 _Q.append(Q_l)
                                 _mc.append(mc_l)
                                 _ddpg.append(ddpg_l)
@@ -244,7 +251,7 @@ class mpH2Trainer(mpTrainer):
                             count += 1
                     elif self.buffer.size>=self.buffer.minimal_size: # train using buffer
                         trans_dict_b = self.buffer.sample(batch_size=self.batch_size)
-                        self.main_agent.h1update(trans_dict_b)
+                        self.main_agent.update(trans_dict_b)
                 [w.join() for w in self.workers]
                 np.savez(folder+"log.npz", 
                         true_values = true_values,
@@ -263,7 +270,7 @@ class mpH2Trainer(mpTrainer):
         trans_dicts = D.split_dict(trans_dict, batch_size=self.batch_size)
         _Q, _mc, _ddpg = [], [], []
         for dict in trans_dicts:
-            Q_l, mc_l, ddpg_l = self.main_agent.h1update(dict)
+            Q_l, mc_l, ddpg_l = self.main_agent.update(dict)
             _Q.append(Q_l)
             _mc.append(mc_l)
             _ddpg.append(ddpg_l)

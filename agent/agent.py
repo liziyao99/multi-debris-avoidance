@@ -554,6 +554,12 @@ class H2Agent(boundedRlAgent):
         self.h1a_opt.step()
 
         return Q_loss.item(), mc_loss.item(), ddpg_loss.item()
+    
+    def update(self,trans_dict):
+        '''
+            see `h1update`.
+        '''
+        return self.h1update(trans_dict)
 
 
 class SAC(boundedRlAgent):
@@ -567,7 +573,7 @@ class SAC(boundedRlAgent):
                  actor_lr=0.00001, 
                  critic_lr=0.0001, 
                  alpha_lr=0.00001,
-                 target_entropy=-1.,
+                 target_entropy:float=None,
                  gamma=0.99,
                  tau=0.005,
                  device=None) -> None:
@@ -579,7 +585,7 @@ class SAC(boundedRlAgent):
         self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float, device=device)
         self.log_alpha.requires_grad = True
         self.log_alpha_opt = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
-        self.target_entropy = target_entropy
+        self.target_entropy = target_entropy if target_entropy is not None else -self.action_dim
         self.gamma = gamma
         self.tau = tau
 
@@ -645,7 +651,7 @@ class SAC(boundedRlAgent):
         # actor_loss = -self.V(trans_dict["obss"], target=False).mean()
         self.actor_opt.zero_grad()
         actor_loss.backward()
-        self.actor_opt.step()
+        # self.actor_opt.step()
 
         alpha_loss = -torch.mean((new_log_probs+self.target_entropy).detach()*self.log_alpha.exp())
         self.log_alpha_opt.zero_grad()
@@ -654,6 +660,9 @@ class SAC(boundedRlAgent):
 
         self.soft_update(self.critic1, self.target_critic1)
         self.soft_update(self.critic2, self.target_critic2)
+
+        critic_loss = (critic1_loss+critic2_loss)/2
+        return critic_loss.item(), actor_loss.item(), alpha_loss.item()
 
     def save(self, path="../model/dicts.ptd"):
         dicts = {
@@ -684,3 +693,71 @@ class SAC(boundedRlAgent):
         self.log_alpha_opt.load_state_dict(dicts["log_alpha_opt"])
 
     
+class DDPG(boundedRlAgent):
+    def __init__(self, 
+                 obs_dim: int, 
+                 action_dim: int, 
+                 gamma = 0.99,
+                 sigma = 0.1,
+                 tau = 0.005,
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 critic_hiddens: typing.List[int] = [128] * 5, 
+                 action_upper_bounds=None, 
+                 action_lower_bounds=None, 
+                 actor_lr=0.00001, 
+                 critic_lr=0.0001, 
+                 device=None) -> None:
+        super().__init__(obs_dim, action_dim, actor_hiddens, critic_hiddens, action_upper_bounds, action_lower_bounds, actor_lr, critic_lr, device)
+        self.gamma = gamma
+        self.sigma = sigma
+        self.tau = tau
+
+    def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
+        self.actor = boundedFcNet(self.obs_dim, self.action_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.target_actor = boundedFcNet(self.obs_dim, self.action_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
+        self.target_actor.load_state_dict(self.actor.state_dict())
+    
+    def _init_critic(self, hiddens, lr):
+        self.critic = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
+        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
+        self.target_critic = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
+        self.target_critic.load_state_dict(self.critic.state_dict())
+
+    def act(self, obs:torch.Tensor):
+        '''
+            returns:
+                `output`: output of actor.
+                `sample`: sampled of `output` if actor is random, else `output`.
+        '''
+        obs = obs.to(self.device)
+        output = self.actor(obs)
+        noise = torch.randn_like(output)*self.sigma
+        sample = output + noise
+        return output, sample
+
+    def soft_update(self, net, target_net):
+        for param_target, param in zip(target_net.parameters(), net.parameters()):
+            param_target.data.copy_(param_target.data*(1.0-self.tau) + param.data*self.tau)
+
+    def update(self, trans_dict):
+        trans_dict = D.torch_dict(trans_dict, device=self.device)
+        rewards = trans_dict["rewards"].reshape((-1, 1))
+        dones = trans_dict["dones"].reshape((-1, 1))
+
+        next_q_values = self.target_critic(trans_dict["next_obss"], self.target_actor(trans_dict["next_obss"]))
+        q_targets = rewards + self.gamma*next_q_values*(~dones)
+        critic_loss = torch.mean(F.mse_loss(self.critic(trans_dict["obss"], trans_dict["actions"]), q_targets))
+        self.critic_opt.zero_grad()
+        critic_loss.backward()
+        self.critic_opt.step()
+
+        actor_loss = -torch.mean(self.critic(trans_dict["obss"], self.actor(trans_dict["obss"])))
+        self.actor_opt.zero_grad()
+        actor_loss.backward()
+        self.actor_opt.step()
+
+        self.soft_update(self.actor, self.target_actor)
+        self.soft_update(self.critic, self.target_critic)
+
+        return critic_loss.item(), actor_loss.item()

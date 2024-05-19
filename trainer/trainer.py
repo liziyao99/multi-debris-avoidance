@@ -770,7 +770,7 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         return h1td, h2Loss
 
     
-    def treeSim(self, select_itr:int, select_size:int, state0:torch.Tensor=None, h1_explore_eps=0., train_h2a=False):
+    def treeSim(self, select_itr:int, select_size:int, state0:torch.Tensor=None, h1_explore_eps=0., train_h2a=False, tutor_on=False):
         '''
             returns: `trans_dict`, `H2loss`, `root.V_target`
         '''
@@ -779,11 +779,12 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         self.tree.reset_root(state0[0].detach().cpu().numpy(), self.prop.getObss(state0)[0].detach().cpu().numpy())
         
         # imitate learning
-        h1td, _ = self.tutorSim(state0)
-        h1td = D.numpy_dict(h1td)
-        tds = D.deBatch_dict(h1td)
-        for d in tds:
-            self.tree.new_traj(0, 0, d)
+        if tutor_on:
+            h1td, _ = self.tutorSim(state0)
+            h1td = D.numpy_dict(h1td)
+            tds = D.deBatch_dict(h1td)
+            for d in tds:
+                self.tree.new_traj(0, 0, d)
         
         H2loss = []
         for i in range(select_itr):
