@@ -141,13 +141,17 @@ class tanhNormalDistNet(normalDistNet):
                  n_feature: int, 
                  n_sample: int, 
                  n_hiddens: torch.List[int], 
-                 action_bound: float, 
-                 sigma_upper_bound: float,
+                 action_bounds: typing.List[float], 
+                 sigma_upper_bounds: typing.List[float],
                  ):
-        upper_bounds = [ torch.inf]*n_sample+[sigma_upper_bound]*n_sample
+        upper_bounds = [ torch.inf]*n_sample+sigma_upper_bounds
         lower_bounds = [-torch.inf]*n_sample+[1e-7]*n_sample
         super().__init__(n_feature, n_sample, n_hiddens, upper_bounds, lower_bounds)
-        self.action_bound = action_bound
+        self.action_bounds = torch.tensor(action_bounds).reshape((1,n_sample))
+
+    def to(self, device: str, **kwargs):
+        self.action_bounds = self.action_bounds.to(device)
+        return super().to(device, **kwargs)
 
     def sample(self, output:torch.Tensor):
         '''
@@ -158,7 +162,7 @@ class tanhNormalDistNet(normalDistNet):
 
     def contract(self, normal_sample:torch.Tensor):
         contracted = torch.tanh(normal_sample)
-        action = self.action_bound*contracted
+        action = self.action_bounds*contracted
         return action
     
     def tanh_log_prob(self, output:torch.Tensor, normal_sample:torch.Tensor):
@@ -168,7 +172,7 @@ class tanhNormalDistNet(normalDistNet):
         contracted = torch.tanh(normal_sample)
         log_prob = self.distribution(output).log_prob(normal_sample)
         log_prob = log_prob - torch.log(1-torch.tanh(contracted)**2+1e-7)
-        # action = self.action_bound*contracted
+        log_prob = torch.sum(log_prob, dim=-1, keepdim=True)
         return log_prob
     
     def tanh_sample(self, obss):

@@ -134,8 +134,9 @@ class mpH2Worker(mpWorker):
 class mpH2Trainer(mpTrainer):
     def __init__(self, n_process:int, buffer:replayBuffer, n_debris:int, agentArgs:dict, 
                  select_itr=10, select_size=32, batch_size=2048, main_device="cuda", mode="default"):
-        if mode not in ["default", "alter"]:
-            raise ValueError("mode must be \"default\" or \"alter\"")
+        self._modes = ("default", "alter", "SAC")
+        if mode not in self._modes:
+            raise ValueError(f"mode must be in {self._modes}.")
         self.mode = mode
         self.n_debris = n_debris
         self.main_device = main_device
@@ -164,10 +165,16 @@ class mpH2Trainer(mpTrainer):
                           h2out_dim=p.h2_action_dim, 
                           device=device,
                           **self.agentArgs)
+        _, tutor = trainer.trainer.CWPTT(self.n_debris, agent.device, "../model/planTrack3.ptd")
         if self.mode=="default":
             return trainer.trainer.H2TreeTrainer(p, agent)
-        elif self.mode=="alter":
-            _, tutor = trainer.trainer.CWPTT(self.n_debris, agent.device, "../model/planTrack3.ptd")
+        if self.mode=="alter":
+            return trainer.trainer.H2TreeTrainerAlter(p, agent, tutor)
+        if self.mode=="SAC":
+            agent = A.SAC(obs_dim=p.obs_dim,
+                          action_dim=p.h1_action_dim,
+                          device=device,
+                          **self.agentArgs)
             return trainer.trainer.H2TreeTrainerAlter(p, agent, tutor)
     
     def _reset_workers(self):
@@ -180,13 +187,24 @@ class mpH2Trainer(mpTrainer):
             self.workers.append(mpH2Worker(self.select_itr, self.select_size, trainer, f"worker{i}"))
 
     def pull(self, idx):
-        self.agents[idx].h1a.load_state_dict(self.main_agent.h1a.state_dict())
-        self.agents[idx].h1c.load_state_dict(self.main_agent.h1c.state_dict())
-        self.agents[idx].h2a.load_state_dict(self.main_agent.h2a.state_dict())
+        if self.mode=="default":
+            self.agents[idx].h1a.load_state_dict(self.main_agent.h1a.state_dict())
+            self.agents[idx].h1c.load_state_dict(self.main_agent.h1c.state_dict())
+            self.agents[idx].h2a.load_state_dict(self.main_agent.h2a.state_dict())
         if self.mode=="alter":
+            self.agents[idx].h1a.load_state_dict(self.main_agent.h1a.state_dict())
+            self.agents[idx].h1c.load_state_dict(self.main_agent.h1c.state_dict())
+            self.agents[idx].h2a.load_state_dict(self.main_agent.h2a.state_dict())
             self.workers[idx].trainer.tutor.planner.load_state_dict(self.main_trainer.tutor.planner.state_dict())
             self.workers[idx].trainer.tutor.critic.load_state_dict(self.main_trainer.tutor.critic.state_dict())
             self.workers[idx].trainer.tutor.tracker.load_state_dict(self.main_trainer.tutor.tracker.state_dict())
+        if self.mode=="SAC":
+            self.agents[idx].actor.load_state_dict(self.main_agent.actor.state_dict())
+            self.agents[idx].critic1.load_state_dict(self.main_agent.critic1.state_dict())
+            self.agents[idx].critic2.load_state_dict(self.main_agent.critic2.state_dict())
+            self.agents[idx].target_critic1.load_state_dict(self.main_agent.target_critic1.state_dict())
+            self.agents[idx].target_critic2.load_state_dict(self.main_agent.target_critic2.state_dict())
+            self.agents[idx].log_alpha[...] = self.main_agent.log_alpha[...]
     
     def train(self, n_epoch:int, total_episode:int, folder="../model/", sim_kwargs:dict=None):
         if sim_kwargs is not None:

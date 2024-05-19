@@ -454,14 +454,19 @@ from tree.undoTree import undoTree
 class H2TreeTrainer:
     def __init__(self, 
                  prop:hirearchicalPropagator.H2Propagator,
-                 agent:agent.H2Agent,) -> None:
+                 agent:agent.H2Agent,
+                 h2a_bound=0.06) -> None:
         self.prop = prop
         self.agent = agent
         self.tree = undoTree(prop.h1_step, prop.state_dim, prop.obs_dim, prop.h1_action_dim, gamma=agent.gamma)
+        self.h2a_bound = h2a_bound
 
     @property
     def device(self):
         return self.agent.device
+    
+    def h2a_clip(self, actions):
+        return torch.clamp(actions, -self.h2a_bound, self.h2a_bound)
 
     def h2Sim(self, states0:torch.Tensor, h1actions:torch.Tensor=None, h1noise=True, prop_with_grad=True):
         '''
@@ -476,11 +481,11 @@ class H2TreeTrainer:
         obss = self.prop.getObss(states0, require_grad=True)
         
         if h1actions is None:
-            _, h1actions = self.agent.h1act(obss)
+            _, h1actions = self.agent.act(obss)
         if h1noise:
-            noise = self.agent.h1a.uniSample(batch_size)/10
+            noise = self.agent.actor.uniSample(batch_size)/10
             h1actions = h1actions + noise
-        h1actions = self.agent.h1a.clip(h1actions)
+        h1actions = self.agent.actor.clip(h1actions)
         h1actions_incremented = (h1actions+states0[:,:6]).detach() # increment control
         
         states = states0.clone()
@@ -525,7 +530,7 @@ class H2TreeTrainer:
             h1td["states"][step, ...] = states[...].detach()
             h1td["obss"][step, ...] = obss[...].detach()
             if np.random.rand()<h1_explore_eps:
-                h1actions = self.agent.h1a.uniSample(batch_size)
+                h1actions = self.agent.actor.uniSample(batch_size)
             else:
                 h1actions = None
             _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, prop_with_grad=prop_with_grad)
@@ -615,7 +620,7 @@ class H2TreeTrainer:
                 for _ in range(episode):
                     loss = torch.zeros(1, device=self.agent.device, requires_grad=True)
                     states0 = self.prop.randomInitStates(states_num)
-                    h1actions = self.agent.h1a.uniSample(states_num)
+                    h1actions = self.agent.actor.uniSample(states_num)
                     states = states0
                     obss = self.prop.getObss(states)
                     for t in range(horizon):
@@ -633,7 +638,7 @@ class H2TreeTrainer:
 from env.dynamic import matrix
 class H2TreeTrainerAlter(H2TreeTrainer):
     def __init__(self, prop: hirearchicalPropagator.H2CWDePropagator, agent: agent.H2Agent, tutor:agent.planTrackAgent, 
-                 conGramMat_file=None) -> None:
+                 conGramMat_file=None, h2a_bound=0.06) -> None:
         super().__init__(prop, agent)
 
         self.transfer_time = prop.dt*prop.h2_step
@@ -651,6 +656,9 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         self.Phi0 = torch.from_numpy(Phi0).float().to(self.agent.device)
 
         self.tutor = tutor
+
+        self.h2a_bound = h2a_bound
+
 
     def transfer_u(self, states0, targets, step):
         tau = self.prop.dt*step
@@ -682,11 +690,14 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         obss = self.prop.getObss(states0, require_grad=True)
         
         if h1actions is None:
-            _, h1actions = self.agent.h1act(obss)
+            _, h1actions = self.agent.act(obss)
         if h1noise:
-            noise = self.agent.h1a.uniSample(batch_size)/10
-            h1actions = h1actions + noise
-        h1actions = self.agent.h1a.clip(h1actions)
+            try:
+                noise = self.agent.actor.uniSample(batch_size)/10
+                h1actions = h1actions + noise
+                h1actions = self.agent.actor.clip(h1actions)
+            except:
+                pass
         targets = (h1actions+states0[:,:6]).detach() # increment control
         
         primals0 = states0[:,:6]
@@ -699,7 +710,7 @@ class H2TreeTrainerAlter(H2TreeTrainer):
             trans_dict["states"][step,...] = states[...].detach()
             trans_dict["obss"][step,...] = obss[...].detach()
             actions = self.transfer_u(primals0, targets, step)
-            actions = self.agent.h2a.clip(actions)
+            actions = self.h2a_clip(actions)
             states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, targets, actions, require_grad=prop_with_grad)
             terminal_rewards = torch.where(done_flags, terminal_rewards, trs)
             next_states = torch.where(done_flags.unsqueeze(1), next_states, states)

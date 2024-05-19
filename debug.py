@@ -103,7 +103,10 @@ if __name__ == "__main__":
                     select_itr=16, select_size=16, batch_size=4096, main_device="cuda", mode="alter")
     from agent.agent import SAC
     prop = mt.main_trainer.prop
-    sac = SAC(prop.obs_dim, prop.h1_action_dim, 0.06, 10,)
+    action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
+    sigma_bounds=  [1e2]*6
+    sac = SAC(prop.obs_dim, prop.h1_action_dim, action_bounds, sigma_bounds,)
+    mt.debug()
     h1td, _ = mt.main_trainer.tutorSim(None)
     td = D.deBatch_dict(h1td)[0]
     sac.update(td)

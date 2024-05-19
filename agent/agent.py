@@ -435,6 +435,8 @@ class H2Agent(boundedRlAgent):
         self.h1c_opt = torch.optim.Adam(self.h1c.parameters(), lr=h1c_lr)
         self.h2a = boundedFcNet(self.h2obs_dim+self.h1h2_dim, self.h2out_dim, h2a_hiddens, h2out_ub, h2out_lb).to(self.device)
         self.h2a_opt = torch.optim.Adam(self.h2a.parameters(), lr=h2a_lr)
+        self.actor = self.h1a
+        self.critic = self.h1c
 
     def h1explore(self, size:int):
         output = self.h1a.obc.uniSample(size).to(self.device)
@@ -558,8 +560,8 @@ class SAC(boundedRlAgent):
     def __init__(self, 
                  obs_dim: int, 
                  action_dim: int, 
-                 action_bound:float, 
-                 sigma_upper_bound=1.,
+                 action_bounds: typing.List[float], 
+                 sigma_upper_bounds: typing.List[float],
                  actor_hiddens: typing.List[int] = [128] * 5, 
                  critic_hiddens: typing.List[int] = [128] * 5, 
                  actor_lr=0.00001, 
@@ -572,11 +574,11 @@ class SAC(boundedRlAgent):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-        self._init_actor(actor_hiddens, action_bound, sigma_upper_bound, actor_lr)
+        self._init_actor(actor_hiddens, action_bounds, sigma_upper_bounds, actor_lr)
         self._init_critic(critic_hiddens, critic_lr)
-        self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float)
+        self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float, device=device)
         self.log_alpha.requires_grad = True
-        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
+        self.log_alpha_opt = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
         self.target_entropy = target_entropy
         self.gamma = gamma
         self.tau = tau
@@ -610,6 +612,11 @@ class SAC(boundedRlAgent):
         obss = obss.to(self.device)
         actions = actions.to(self.device)
         return self.log_alpha.exp()*entropy+self.QMin(obss, actions, target=target)
+    
+    def V(self, obss, target=False):
+        actions, log_probs = self.actor.tanh_sample(obss)
+        values = self.QEntropy(obss, actions, -log_probs, target=target)
+        return values
 
     def soft_update(self, net, target_net):
         for param_target, param in zip(target_net.parameters(), net.parameters()):
@@ -621,8 +628,7 @@ class SAC(boundedRlAgent):
         dones = trans_dict["dones"].reshape((-1, 1))
 
         next_actions, next_log_probs = self.actor.tanh_sample(trans_dict["next_obss"])
-        entropy = -torch.sum(next_log_probs, dim=-1, keepdim=True)
-        next_QEntropy = self.QEntropy(trans_dict["next_obss"], next_actions, entropy, target=True)
+        next_QEntropy = self.QEntropy(trans_dict["next_obss"], next_actions, -next_log_probs, target=True)
         td_targets = rewards + self.gamma*next_QEntropy*(~dones)
         critic1_loss = F.mse_loss(self.critic1(trans_dict["obss"], trans_dict["actions"]), td_targets.detach())
         critic2_loss = F.mse_loss(self.critic2(trans_dict["obss"], trans_dict["actions"]), td_targets.detach())
@@ -634,18 +640,47 @@ class SAC(boundedRlAgent):
         self.critic2_opt.step()
 
         new_actions, new_log_probs = self.actor.tanh_sample(trans_dict["obss"])
-        entropy = -torch.sum(new_log_probs, dim=-1, keepdim=True)
-        new_QEntropy = self.QEntropy(trans_dict["obss"], new_actions, entropy, target=False)
+        new_QEntropy = self.QEntropy(trans_dict["obss"], new_actions, -new_log_probs, target=False)
         actor_loss = -new_QEntropy.mean()
+        # actor_loss = -self.V(trans_dict["obss"], target=False).mean()
         self.actor_opt.zero_grad()
         actor_loss.backward()
         self.actor_opt.step()
 
         alpha_loss = -torch.mean((new_log_probs+self.target_entropy).detach()*self.log_alpha.exp())
-        self.log_alpha_optimizer.zero_grad()
+        self.log_alpha_opt.zero_grad()
         alpha_loss.backward()
-        self.log_alpha_optimizer.step()
+        self.log_alpha_opt.step()
 
         self.soft_update(self.critic1, self.target_critic1)
         self.soft_update(self.critic2, self.target_critic2)
+
+    def save(self, path="../model/dicts.ptd"):
+        dicts = {
+                "actor": self.actor.state_dict(),
+                "actor_opt": self.actor_opt.state_dict(),
+                "critic1": self.critic1.state_dict(),
+                "critic1_opt": self.critic1_opt.state_dict(),
+                "critic2": self.critic2.state_dict(),
+                "critic2_opt": self.critic2_opt.state_dict(),
+                "target_critic1": self.target_critic1.state_dict(),
+                "target_critic2": self.target_critic2.state_dict(),
+                "log_alpha": self.log_alpha,
+                "log_alpha_opt": self.log_alpha_opt.state_dict(),
+            }
+        torch.save(dicts, path)
+
+    def load(self, path="../model/dicts.ptd"):
+        dicts = torch.load(path)
+        self.actor.load_state_dict(dicts["actor"])
+        self.actor_opt.load_state_dict(dicts["actor_opt"])
+        self.critic1.load_state_dict(dicts["critic1"])
+        self.critic1_opt.load_state_dict(dicts["critic1_opt"])
+        self.critic2.load_state_dict(dicts["critic2"])
+        self.critic2_opt.load_state_dict(dicts["critic2_opt"])
+        self.target_critic1.load_state_dict(dicts["target_critic1"])
+        self.target_critic2.load_state_dict(dicts["target_critic2"])
+        self.log_alpha[...] = dicts["log_alpha"][...]
+        self.log_alpha_opt.load_state_dict(dicts["log_alpha_opt"])
+
     
