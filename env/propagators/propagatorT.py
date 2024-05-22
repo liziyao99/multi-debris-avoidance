@@ -93,7 +93,7 @@ class PropagatorT(Propagator):
     def seqTrack(self, init_states:torch.Tensor, targets_seq:torch.Tensor, tracker) -> torch.Tensor:
         '''
             args:
-                `states`: shape (batch_size,state_dim)
+                `init_states`: shape (batch_size,state_dim)
                 `targets_seq`: shape (horizon,batch_size,state_dim)
                 `tracker`: see `trackNet`.
         '''
@@ -111,6 +111,31 @@ class PropagatorT(Propagator):
             states, _, _, _ = self.propagate(states, actions)
         states_seq = torch.stack(states_seq)
         loss = tracker.loss(states_seq, targets_seq)
+        return loss
+    
+    def episodeTrack(self, init_states:torch.Tensor, targets:torch.Tensor, tracker, horizon:int) -> torch.Tensor:
+        '''
+            args:
+                `init_states`: shape (batch_size,state_dim)
+                `targets`: shape (batch_size,state_dim)
+                `tracker`: see `trackNet`.
+                `horizon`: step to reach `targets`.
+        '''
+        err_thrus = 10.
+        states = init_states
+        actions_list = []
+        for i in range(horizon):
+            obss = self.getObss(states)
+            obss_t = self.getObss(targets.detach())
+            tracker_input = torch.hstack((obss,obss_t))
+            actions = tracker(tracker_input)
+            states, _, _, _ = self.propagate(states, actions)
+            actions_list.append(actions)
+        err_loss = torch.norm(states-targets, dim=1)
+        actions_list = torch.stack(actions_list)
+        act_loss = torch.sum(torch.norm(actions_list, dim=-1), dim=0)
+        loss = torch.where(err_loss<err_thrus, err_loss+act_loss, err_loss)
+        loss = loss.mean()
         return loss
     
     def stepTrack(self, states:torch.Tensor, targets:torch.Tensor, tracker) -> torch.Tensor:
