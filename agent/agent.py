@@ -412,6 +412,7 @@ class H2Agent(boundedRlAgent):
         self.h2out_dim = h2out_dim
         self.pad_dim = h1pad_dim
         self.h1h2_dim = h1out_dim+h1pad_dim
+        self.action_dim = h1out_dim
 
         self.gamma = gamma
 
@@ -430,7 +431,8 @@ class H2Agent(boundedRlAgent):
 
     def _init_networks(self, h1a_hiddens, h2a_hiddens, h1c_hiddens, h1a_lr, h2a_lr, h1c_lr, h1out_ub, h1out_lb, h2out_ub, h2out_lb):
         self.h1a = boundedFcNet(self.obs_dim, self.h1out_dim, h1a_hiddens, h1out_ub, h1out_lb).to(self.device)
-        self.h1a_opt = torch.optim.Adam(self.h1a.parameters(), lr=h1a_lr)
+        self.h1a_opt1 = torch.optim.Adam(self.h1a.parameters(), lr=h1a_lr)
+        self.h1a_opt2 = torch.optim.Adam(self.h1a.parameters(), lr=h1a_lr)
         self.h1c = QNet(self.h1obs_dim, self.h1out_dim, h1c_hiddens).to(self.device)
         self.h1c_opt = torch.optim.Adam(self.h1c.parameters(), lr=h1c_lr)
         self.h2a = boundedFcNet(self.h2obs_dim+self.h1h2_dim, self.h2out_dim, h2a_hiddens, h2out_ub, h2out_lb).to(self.device)
@@ -453,7 +455,7 @@ class H2Agent(boundedRlAgent):
     
     @property
     def planner_opt(self):
-        return self.h1a_opt
+        return self.h1a_opt1
     
     @property
     def Q(self):
@@ -501,7 +503,8 @@ class H2Agent(boundedRlAgent):
         dicts = {
                 "h1a_net": self.h1a.state_dict(),
                 "h1c_net": self.h1c.state_dict(),
-                "h1a_opt": self.h1a_opt.state_dict(),
+                "h1a_opt1": self.h1a_opt1.state_dict(),
+                "h1a_opt2": self.h1a_opt2.state_dict(),
                 "h1c_opt": self.h1c_opt.state_dict(),
                 "h2a_net": self.h2a.state_dict(),
                 "h2a_opt": self.h2a_opt.state_dict()
@@ -512,7 +515,8 @@ class H2Agent(boundedRlAgent):
         dicts = torch.load(path)
         self.h1a.load_state_dict(dicts["h1a_net"])
         self.h1c.load_state_dict(dicts["h1c_net"])
-        self.h1a_opt.load_state_dict(dicts["h1a_opt"])
+        self.h1a_opt1.load_state_dict(dicts["h1a_opt1"])
+        self.h1a_opt2.load_state_dict(dicts["h1a_opt2"])
         self.h1c_opt.load_state_dict(dicts["h1c_opt"])
         self.h2a.load_state_dict(dicts["h2a_net"])
         self.h2a_opt.load_state_dict(dicts["h2a_opt"])
@@ -543,15 +547,15 @@ class H2Agent(boundedRlAgent):
 
         actions = self.h1a(trans_dict["obss"])
         mc_loss = torch.mean(-trans_dict["regret_mc"]*torch.norm(actions-trans_dict["actions"],dim=-1))
-        self.h1a_opt.zero_grad()
+        self.h1a_opt1.zero_grad()
         mc_loss.backward()
-        # self.h1a_opt.step()
+        self.h1a_opt1.step()
 
         actions = self.h1a(trans_dict["obss"])
         ddpg_loss = torch.mean(-self.Q(trans_dict["obss"], actions))
-        # self.h1a_opt.zero_grad()
+        self.h1a_opt2.zero_grad()
         ddpg_loss.backward()
-        self.h1a_opt.step()
+        self.h1a_opt2.step()
 
         return Q_loss.item(), mc_loss.item(), ddpg_loss.item()
     
@@ -602,6 +606,7 @@ class SAC(boundedRlAgent):
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
         self.target_critic2.load_state_dict(self.critic2.state_dict())
+        self.critic = self.critic1
 
     def QMin(self, obss, actions, target=False):
         obss = obss.to(self.device)
@@ -648,10 +653,9 @@ class SAC(boundedRlAgent):
         new_actions, new_log_probs = self.actor.tanh_sample(trans_dict["obss"])
         new_QEntropy = self.QEntropy(trans_dict["obss"], new_actions, -new_log_probs, target=False)
         actor_loss = -new_QEntropy.mean()
-        # actor_loss = -self.V(trans_dict["obss"], target=False).mean()
         self.actor_opt.zero_grad()
         actor_loss.backward()
-        # self.actor_opt.step()
+        self.actor_opt.step()
 
         alpha_loss = -torch.mean((new_log_probs+self.target_entropy).detach()*self.log_alpha.exp())
         self.log_alpha_opt.zero_grad()
@@ -689,7 +693,7 @@ class SAC(boundedRlAgent):
         self.critic2_opt.load_state_dict(dicts["critic2_opt"])
         self.target_critic1.load_state_dict(dicts["target_critic1"])
         self.target_critic2.load_state_dict(dicts["target_critic2"])
-        self.log_alpha[...] = dicts["log_alpha"][...]
+        self.log_alpha = dicts["log_alpha"].to(self.device)
         self.log_alpha_opt.load_state_dict(dicts["log_alpha_opt"])
 
     
@@ -761,3 +765,23 @@ class DDPG(boundedRlAgent):
         self.soft_update(self.critic, self.target_critic)
 
         return critic_loss.item(), actor_loss.item()
+    
+    def save(self, path="../model/dicts.ptd"):
+        dicts = {
+                "actor": self.actor.state_dict(),
+                "actor_opt": self.actor_opt.state_dict(),
+                "critic": self.critic.state_dict(),
+                "critic_opt": self.critic_opt.state_dict(),
+                "target_actor": self.target_actor.state_dict(),
+                "target_critic": self.target_critic.state_dict(),
+            }
+        torch.save(dicts, path)
+
+    def load(self, path="../model/dicts.ptd"):
+        dicts = torch.load(path)
+        self.actor.load_state_dict(dicts["actor"])
+        self.actor_opt.load_state_dict(dicts["actor_opt"])
+        self.critic.load_state_dict(dicts["critic"])
+        self.critic_opt.load_state_dict(dicts["critic_opt"])
+        self.target_actor.load_state_dict(dicts["target_actor"])
+        self.target_critic.load_state_dict(dicts["target_critic"])

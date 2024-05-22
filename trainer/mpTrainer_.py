@@ -115,7 +115,7 @@ class mpTrainer:
         return outq.get()
     
 
-class mpH2Worker(mpWorker):
+class mpH2TreeWorker(mpWorker):
     def __init__(self, 
                  select_itr:int, select_size:int, trainer:trainer.trainer.H2TreeTrainer, name:str,
                  inq:mp.Queue=None, outq:mp.Queue=None) -> None:
@@ -131,7 +131,7 @@ class mpH2Worker(mpWorker):
         trans_dict, _, v = self.trainer.treeSim(select_itr, select_size, train_h2a=False, **kwargs)
         return trans_dict, v
     
-class mpH2Trainer(mpTrainer):
+class mpH2TreeTrainer(mpTrainer):
     def __init__(self, n_process:int, buffer:replayBuffer, n_debris:int, agentArgs:dict, 
                  select_itr=10, select_size=32, batch_size=2048, main_device="cuda", mode="default"):
         self._modes = ("default", "alter", "SAC")
@@ -191,7 +191,7 @@ class mpH2Trainer(mpTrainer):
         self.workers = []
         for i in range(self.n_process):
             trainer = self._init_trainer()
-            self.workers.append(mpH2Worker(self.select_itr, self.select_size, trainer, f"worker{i}"))
+            self.workers.append(mpH2TreeWorker(self.select_itr, self.select_size, trainer, f"worker{i}"))
 
     def pull(self, idx):
         if self.mode=="default":

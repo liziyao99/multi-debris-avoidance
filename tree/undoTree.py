@@ -202,14 +202,22 @@ class undoTree:
             trans_dict["terminal_rewards"][i] = node.terminal_reward
         return trans_dict
 
-    def select(self, size, mode="uniform"):
-        if mode not in ["uniform", "regret"]:
-            raise(ValueError("mode must be \"uniform\" or \"regret\"."))
-        nodes = [node for node in self.nodes if not node.done]
+    def select(self, size, mode="uniform", gen=None):
+        if mode not in ["uniform", "regret", "QMax"]:
+            raise(ValueError("mode must be \"uniform\" or \"regret\" or \"QMax\"."))
+        if gen is None:
+            nodes = [node for node in self.nodes if not node.done]
+        else:
+            nodes = [node for node in self.gens[gen] if not node.done]
         if mode=="uniform":
             selected = np.random.choice(nodes, size)
         elif mode=="regret":
             raise(NotImplementedError)
+        elif mode=="QMax":
+            q = [node.Q_target for node in nodes]
+            q = np.array(q, dtype=np.float32)
+            idx = q.argmax()
+            selected = [nodes[idx]]*size
         states = [n.state for n in selected]
         idx_pairs = [(n.gen, n.idx) for n in selected]
         return states, idx_pairs

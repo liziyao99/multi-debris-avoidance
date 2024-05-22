@@ -10,7 +10,8 @@ from rich.progress import Progress
 
 class gymTrainer:
     def __init__(self, env_name:str, agent:rlAgent, buffer:replayBuffer, max_episode_step=200) -> None:
-        self.env = gym.make(env_name, max_episode_steps=max_episode_step)
+        self.name = env_name
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode="human")
         self.agent = agent
         self.buffer = buffer
         self.max_episode_step = max_episode_step
@@ -27,13 +28,15 @@ class gymTrainer:
     def action_dim(self):
         return self.env.action_space.shape[0]
     
-    def simulate(self, off_policy_train=True):
+    def simulate(self, off_policy_train=True, render=False):
         trans_dict = D.init_transDict(length=self.max_episode_step, state_dim=0, obs_dim=self.obs_dim, action_dim=self.action_dim)
         trans_dict = D.numpy_dict(trans_dict)
         obs, info = self.reset()
         done = False
         step = 0
         while not done:
+            if render:
+                self.env.render()
             trans_dict["obss"][step,:] = obs[:]
             _, action = self.agent.act(self.toTorch(obs))
             action = self.toNumpy(action)
@@ -66,6 +69,7 @@ class gymTrainer:
                         log_dict[self.loss_keys[i]].append(Loss[i])
                     self.buffer.from_dict(trans_dict)
                     progress.update(task, advance=1)
+            self.agent.save(f"../model/check_point_{self.name}.ptd")
         # return log_dict # TODO: substitute tuple returns by dict
         return tuple(log_dict.values())
     
@@ -81,35 +85,41 @@ class gymTrainer:
         return x.squeeze(dim=0).detach().cpu().numpy()
     
 class gymSAC(gymTrainer):
-    def __init__(self, env_name: str,  max_episode_step=200) -> None:
-        self.env = gym.make(env_name, max_episode_steps=max_episode_step)
+    def __init__(self, env_name: str,  max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2) -> None:
+        self.name = env_name
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode="human")
         self.max_episode_step = max_episode_step
         action_bounds = list(self.env.action_space.high)
         sigma_bounds = [10]*self.action_dim
-        agent = A.SAC(self.obs_dim, self.action_dim, action_bounds=action_bounds, sigma_upper_bounds=sigma_bounds)
+        agent = A.SAC(self.obs_dim, self.action_dim, 
+                      actor_hiddens=actor_hiddens,
+                      critic_hiddens=critic_hiddens,
+                      action_bounds=action_bounds, 
+                      sigma_upper_bounds=sigma_bounds,
+                      actor_lr=1e-4,
+                      critic_lr=2e-3,
+                      alpha_lr=1e-4)
         buffer = replayBuffer(keys=("obss", "actions", "rewards", "next_obss", "dones"))
         self.agent = agent
         self.buffer = buffer
         self.loss_keys = ["critic_loss", "actor_loss", "alpha_loss"]
-
-    def reward_normalize(self, rewards: np.ndarray):
-        '''
-            for 'Pendulum-v1'.
-        '''
-        return (rewards + 8.0) / 8.0
     
 class gymDDPG(gymTrainer):
-    def __init__(self, env_name: str, max_episode_step=200) -> None:
-        self.env = gym.make(env_name, max_episode_steps=max_episode_step)
+    def __init__(self, env_name: str, max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2) -> None:
+        self.name = env_name
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode="human")
         self.max_episode_step = max_episode_step
         action_upper_bounds = list(self.env.action_space.high)
         action_lower_bounds = list(self.env.action_space.low)
         agent = A.DDPG(self.obs_dim, self.action_dim, 
-                       action_upper_bounds=action_upper_bounds, action_lower_bounds=action_lower_bounds)
+                       actor_hiddens=actor_hiddens,
+                       critic_hiddens=critic_hiddens,
+                       action_upper_bounds=action_upper_bounds, 
+                       action_lower_bounds=action_lower_bounds,
+                       actor_lr=1e-4,
+                       critic_lr=2e-3)
         buffer = replayBuffer(keys=("obss", "actions", "rewards", "next_obss", "dones"))
         self.agent = agent
         self.buffer = buffer
         self.loss_keys = ["critic_loss", "actor_loss"]
 
-    def reward_normalize(self, rewards: np.ndarray):
-        return (rewards + 8.0) / 8.0

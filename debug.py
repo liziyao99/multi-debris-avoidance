@@ -81,23 +81,66 @@ def debug3(batch_size=256, horizon=600, episode=100):
 
 def gym():
     from trainer.myGym.gymTrainer import gymSAC, gymDDPG
-    # gs = gymSAC('Pendulum-v1')
+    gs = gymSAC('Pendulum-v1')
     gd = gymDDPG('Pendulum-v1')
-    tr, cl ,al = gd.train(1, 10)
+    # tr, cl ,al = gd.train(1, 10)
+    tr, cl, al, apl = gs.train(1, 200)
+
+def alter():
+    from trainer.mpTrainer_ import mpH2TreeTrainer
+    import data.buffer
+    h1out_ub = [ 1000]*3 + [ 3.6]*3
+    h1out_lb = [-1000]*3 + [-3.6]*3
+    h2out_ub = [ 0.06]*3
+    h2out_lb = [-0.06]*3
+    agentArgs = {"h1a_hiddens": [1024]*6, 
+                "h2a_hiddens": [512]*8, 
+                "h1c_hiddens": [1024]*6,
+                "h1out_ub": h1out_ub, 
+                "h1out_lb": h1out_lb, 
+                "h2out_ub": h2out_ub, 
+                "h2out_lb": h2out_lb, }
+    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
+                "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
+    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
+    mt = mpH2TreeTrainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
+                    select_itr=1, select_size=1, batch_size=1024, main_device="cuda", mode="alter")
+    mt.debug()
+
+def sac():
+    from trainer.mpTrainer_ import mpH2TreeTrainer
+    import data.buffer
+    action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
+    sigma_bounds=  [1e2]*6
+    agentArgs = {"actor_hiddens": [640]*14, 
+                "critic_hiddens": [640]*14,
+                "action_bounds": action_bounds,
+                "sigma_upper_bounds": sigma_bounds }
+    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
+                "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
+    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
+    mt = mpH2TreeTrainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
+                    select_itr=2, select_size=100, batch_size=1024, main_device="cuda", mode="SAC")
+    mt.debug()
 
 if __name__ == "__main__":
-    # from trainer.mpTrainer_ import mpH2Trainer
-    # import data.buffer
-    # action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
-    # sigma_bounds=  [1e2]*6
-    # agentArgs = {"actor_hiddens": [640]*14, 
-    #             "critic_hiddens": [640]*14,
-    #             "action_bounds": action_bounds,
-    #             "sigma_upper_bounds": sigma_bounds }
-    # buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
-    #             "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
-    # buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
-    # mt = mpH2Trainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
-    #                 select_itr=2, select_size=100, batch_size=1024, main_device="cuda", mode="SAC")
-    # mt.debug()
-    gym()
+    from trainer.mpTrainer_ import mpH2TreeTrainer
+    import matplotlib.pyplot as plt
+    import data.buffer
+    action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
+    sigma_bounds=  [1e2]*6
+    agentArgs = {"actor_hiddens": [512]*6, 
+                "critic_hiddens": [512]*6,
+                "action_bounds": action_bounds,
+                "sigma_upper_bounds": sigma_bounds }
+    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
+                "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
+    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
+    mt = mpH2TreeTrainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
+                    select_itr=1, select_size=1, batch_size=1024, main_device="cuda", mode="SAC")
+    t = mt.main_trainer
+    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss"]
+    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
+    t.buffer = buffer
+    t.loss_keys = ["critic_loss", "actor_loss", "alpha_loss"]
+    datas = t.offPolicyTrain(1, 10, states_num=20)

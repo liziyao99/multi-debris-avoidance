@@ -2,6 +2,7 @@ import torch
 from env.dynamic import matrix
 from env.dynamic import cwutils
 import typing
+import utils
 
 class H2Propagator:
     def __init__(self, state_dim:int, obs_dim:int, h1_action_dim:int, h2_action_dim:int, h1_step:int, h2_step:int, device="cpu") -> None:
@@ -59,7 +60,7 @@ class H2Propagator:
         raise NotImplementedError
     
 
-class H2CWDePropagator(H2Propagator):
+class H2CWDePropagator0(H2Propagator):
     def __init__(self, n_debris, h1_step=60, h2_step=60, dt=1., orbit_rad=7e6, max_dist=5e3, safe_dist=5e2, device="cpu") -> None:
         state_dim = 6*(1+n_debris) + 7*n_debris + 2
         '''
@@ -255,3 +256,65 @@ class H2CWDePropagator(H2Propagator):
             d2o = torch.linalg.norm(primal_pos, dim=2) # distance to origin
             d2d = torch.linalg.norm(debris_pos-primal_pos, dim=2) # distance to debris
             return d2o, d2d
+        
+class H2CWDePropagator(H2CWDePropagator0):
+    def __init__(self, n_debris, h1_step=60, h2_step=60, dt=1, orbit_rad=7000000, max_dist=5000, safe_dist=500, device="cpu") -> None:
+        super().__init__(n_debris, h1_step, h2_step, dt, orbit_rad, max_dist, safe_dist, device)
+    
+    def getH1Rewards(self, states: torch.Tensor, h1_actions:torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:
+        with torch.set_grad_enabled(require_grad):
+
+            decoded = self.statesDecode(states)
+            is_approaching = decoded["forecast_time"]>-10
+            is_approaching = is_approaching.squeeze(-1)
+            d2o, d2d, d2p = self.distances(states, require_grad)
+
+            d2o = d2o/self.max_dist
+            d2o = d2o.squeeze(-1)
+            d2o_scale= 1.
+            d2o_rewards = -d2o_scale*d2o # [-inf, 0]
+
+            d2d = d2d/self.safe_dist
+            d2d_scale = 2.
+            d2d_rewards = utils.smoothStepFunc(d2d, loc=1, k=30, scale=d2d_scale) # [0, 2]
+            d2d_rewards = torch.min(d2d_rewards, dim=1)[0]
+
+            d2p = d2p/self.safe_dist
+            d2p_scale = 2.
+            d2p_rewards = utils.smoothStepFunc(d2p, loc=1, k=30, scale=d2p_scale) # [0, 2]
+            d2p_rewards = torch.where(is_approaching, d2p_rewards, d2p_scale)
+            d2p_rewards = torch.min(d2p_rewards, dim=1)[0]
+
+            fuel_rewards = (self.h1r_maxfuel-torch.norm(actions, dim=-1))/self.h1r_maxfuel # [0, 1]
+
+            rewards = (fuel_rewards+d2o_rewards+d2d_rewards+d2p_rewards)/self.h2_step
+            return rewards
+        
+    def getDones(self, states:torch.Tensor, require_grad=False) -> typing.Tuple[torch.Tensor]:
+        with torch.set_grad_enabled(require_grad):
+            time_out = states[:,-2]>=self.h1_step
+            d2o, d2d, _ = self.distances(states, require_grad)
+            out_dist = (d2o>self.max_dist).flatten()
+            collision = torch.sum(d2d<self.safe_dist, dim=1).to(torch.bool)
+            dones = time_out
+            terminal_rewards = torch.zeros_like(dones, dtype=torch.float32)
+            return dones, terminal_rewards
+        
+    def distances(self, states, require_grad=False):
+        '''
+            returns:
+                `d2o`: primal's distance to origin.
+                `d2d`: primal's distance to debris.
+                `d2p`: primal's distance to debris' forecast line.
+        '''
+        with torch.set_grad_enabled(require_grad):
+            decoded = self.statesDecode(states, require_grad)
+            primal_pos = decoded["primal"][:, :, :3]
+            debris_pos = decoded["debris"][:, :, :3]
+            forecast_pos = decoded["forecast_pos"]
+            forecast_vel = decoded["forecast_vel"]
+            d2o = torch.linalg.norm(primal_pos, dim=2) # distance to origin
+            d2d = torch.linalg.norm(debris_pos-primal_pos, dim=2) # distance to debris
+            primal_proj, primal_orth = utils.lineProj(primal_pos, forecast_pos, forecast_vel)
+            d2p = torch.linalg.norm(primal_orth, dim=2) # distance to debris' forecast
+            return d2o, d2d, d2p

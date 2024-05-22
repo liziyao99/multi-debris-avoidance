@@ -52,3 +52,9 @@ def compute_advantage(gamma, lmd, td_delta:torch.Tensor):
     advantage_list.reverse()
     advantage_list = torch.vstack(advantage_list)
     return advantage_list
+
+def smoothStepFunc(x:torch.Tensor, loc=0., scale=1., k=1., bias=0.):
+    '''
+        return: `scale/(1+torch.exp(-k*(x-loc)))+bias`
+    '''
+    return scale/(1+torch.exp(-k*(x-loc)))+bias
