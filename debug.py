@@ -124,23 +124,27 @@ def sac():
     mt.debug()
 
 if __name__ == "__main__":
-    from trainer.mpTrainer_ import mpH2TreeTrainer
-    import matplotlib.pyplot as plt
-    import data.buffer
-    action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
-    sigma_bounds=  [1e2]*6
-    agentArgs = {"actor_hiddens": [512]*6, 
-                "critic_hiddens": [512]*6,
-                "action_bounds": action_bounds,
-                "sigma_upper_bounds": sigma_bounds }
-    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
-                "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
-    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
-    mt = mpH2TreeTrainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
-                    select_itr=1, select_size=1, batch_size=1024, main_device="cuda", mode="SAC")
-    t = mt.main_trainer
-    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss"]
-    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
-    t.buffer = buffer
-    t.loss_keys = ["critic_loss", "actor_loss", "alpha_loss"]
-    datas = t.offPolicyTrain(1, 10, states_num=20)
+    from env.propagators.hierarchicalPropagator import H2CWDePropagator
+    from agent.agent import H2Agent
+    from trainer.trainer import H2TreeTrainer
+    prop = H2CWDePropagator(3, device="cuda", h1_step=10, h2_step=360)
+    h1out_ub = [ 1000]*3 + [ 3.6]*3
+    h1out_lb = [-1000]*3 + [-3.6]*3
+    h2out_ub = [ 0.06]*3
+    h2out_lb = [-0.06]*3
+    agent = H2Agent(obs_dim=prop.obs_dim,
+                    h1obs_dim=prop.obs_dim,
+                    h2obs_dim=6, 
+                    h1out_dim=prop.h1_action_dim, 
+                    h2out_dim=prop.h2_action_dim, 
+                    h1a_hiddens=[512]*8, 
+                    h2a_hiddens=[512]*8, 
+                    h1c_hiddens=[512]*8,
+                    h1out_ub=h1out_ub, 
+                    h1out_lb=h1out_lb, 
+                    h2out_ub=h2out_ub, 
+                    h2out_lb=h2out_lb, 
+                    device="cuda")
+    T = H2TreeTrainer(prop, agent,)
+
+    T.h1Sim(states_num=128, train_h2a=True)

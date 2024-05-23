@@ -318,3 +318,37 @@ class H2CWDePropagator(H2CWDePropagator0):
             primal_proj, primal_orth = utils.lineProj(primal_pos, forecast_pos, forecast_vel)
             d2p = torch.linalg.norm(primal_orth, dim=2) # distance to debris' forecast
             return d2o, d2d, d2p
+        
+    def episodeTrack(self, tracker, planner=None, init_states:torch.Tensor=None, targets:torch.Tensor=None, horizon:int=None, batch_size=256) -> torch.Tensor:
+        '''
+            args:
+                `init_states`: shape (batch_size,state_dim)
+                `targets`: shape (batch_size,state_dim)
+                `tracker`: see `trackNet`.
+                `horizon`: step to reach `targets`.
+        '''
+        init_states = self.randomInitStates(batch_size) if init_states is None else init_states
+        horizon = self.h2_step if horizon is None else horizon
+        err_thrus = 10.
+        states = init_states
+        obss = self.getObss(states, require_grad=True)
+        if planner is not None:
+            h1actions = planner(obss)
+            targets = states[:,:6] + h1actions
+        else:
+            targets = self.randomInitStates(batch_size)[:,:6] if targets is None else targets
+            targets = targets*5
+        targets = targets.detach()
+        actions_list = []
+        for i in range(horizon):
+            primals = obss[:,:6]
+            tracker_input = torch.hstack((primals,targets))
+            actions = tracker(tracker_input)
+            states, obss, _, _, dones, _ = self.propagate(states, targets, actions, require_grad=True)
+            actions_list.append(actions)
+        err_loss = torch.norm(states[:,:6]-targets, dim=1)
+        actions_list = torch.stack(actions_list)
+        act_loss = torch.sum(torch.norm(actions_list, dim=-1), dim=0)
+        loss = torch.where(err_loss<err_thrus, err_loss+act_loss, err_loss)
+        loss = loss.mean()
+        return loss

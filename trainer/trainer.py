@@ -2,7 +2,7 @@ from agent import agent
 from env import env as ENV
 from env.propagators import propagator
 from env.propagators import propagatorT
-from env.propagators import hirearchicalPropagator
+from env.propagators import hierarchicalPropagator
 from tree.geneticTree import stateDict
 import data.dicts as D
 from data.buffer import replayBuffer
@@ -454,13 +454,19 @@ def CWPTT(n_debris, device, load=""):
 from tree.undoTree import undoTree
 class H2TreeTrainer:
     def __init__(self, 
-                 prop:hirearchicalPropagator.H2Propagator,
+                 prop:hierarchicalPropagator.H2Propagator,
                  agent:agent.H2Agent,
-                 h2a_bound=0.06) -> None:
+                 h2a_bound=0.06,
+                 buffer:replayBuffer=None,
+                 loss_keys:typing.List[str]=[]) -> None:
         self.prop = prop
         self.agent = agent
         self.tree = undoTree(prop.h1_step, prop.state_dim, prop.obs_dim, prop.h1_action_dim, gamma=agent.gamma)
         self.h2a_bound = h2a_bound
+
+        self.buffer = buffer
+
+        self.loss_keys = loss_keys
 
     @property
     def device(self):
@@ -487,7 +493,7 @@ class H2TreeTrainer:
             noise = self.agent.actor.uniSample(batch_size)/10
             h1actions = h1actions + noise
         h1actions = self.agent.actor.clip(h1actions)
-        h1actions_incremented = (h1actions+states0[:,:6]).detach() # increment control
+        targets = (h1actions+states0[:,:6]).detach() # increment control
         
         states = states0.clone()
         next_states = states0.clone()
@@ -497,8 +503,8 @@ class H2TreeTrainer:
         while not done and step<self.prop.h2_step:
             trans_dict["states"][step,...] = states[...].detach()
             trans_dict["obss"][step,...] = obss[...].detach()
-            _, actions = self.agent.h2act(obss, h1actions_incremented)
-            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, h1actions_incremented, actions, require_grad=prop_with_grad)
+            _, actions = self.agent.h2act(obss, targets)
+            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, targets, actions, require_grad=prop_with_grad)
             terminal_rewards = torch.where(done_flags, terminal_rewards, trs)
             next_states = torch.where(done_flags.unsqueeze(1), next_states, states)
             done_flags = done_flags | dones
@@ -512,6 +518,8 @@ class H2TreeTrainer:
             h2rewards = h2rs
             done = torch.all(dones)
             step += 1
+        actions_rewards = -torch.sum(torch.norm(trans_dict["actions"], dim=-1), dim=0)
+        h2rewards = h2rewards + actions_rewards
         return trans_dict, next_states, h2rewards, h1actions, h1rewards, done_flags, terminal_rewards
     
     def h1Sim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1, train_h2a=False, prop_with_grad=True):
@@ -611,36 +619,91 @@ class H2TreeTrainer:
                     progress.update(task, advance=1)
         return data_list
     
-    def h2Pretrain(self, epoch:int, episode:int, horizon=1200, states_num=256):
+    def h2Pretrain(self, episode:int, horizon=None, states_num=256):
         Loss = []
         with Progress() as progress:
             task = progress.add_task("H2TreeTrainer pretraining:", total=episode)
-            for i in range(epoch):
-                progress.tasks[task].description = "epoch {0} of {1}".format(i+1, epoch)
-                progress.tasks[task].completed = 0
-                for _ in range(episode):
-                    loss = torch.zeros(1, device=self.agent.device, requires_grad=True)
-                    states0 = self.prop.randomInitStates(states_num)
-                    h1actions = self.agent.actor.uniSample(states_num)
-                    states = states0
-                    obss = self.prop.getObss(states)
-                    for t in range(horizon):
-                        _, h2actions = self.agent.h2act(obss, h1actions)
-                        states, obss, _, h2rewards, _, _ = self.prop.propagate(states, h1actions, h2actions, require_grad=True)
-                        loss = loss - h2rewards.mean()
-                    self.agent.h2a_opt.zero_grad()
-                    loss.backward()
-                    self.agent.h2a_opt.step()
-                    Loss.append(loss.item())
-                    progress.update(task, advance=1)
+            for _ in range(episode):
+                loss = self.prop.episodeTrack(self.agent.h2a, self.agent.h1a, horizon=horizon, batch_size=states_num)
+                self.agent.h2a_opt.zero_grad()
+                loss.backward()
+                self.agent.h2a_opt.step()
+                Loss.append(loss.item())
+                progress.update(task, advance=1)
         return Loss
+    
+    def offPolicySim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1, 
+                     off_policy_train=True,
+                     prop_with_grad=False):
+        if states0 is None:
+            states0 = self.prop.randomInitStates(states_num)
+        batch_size = states0.shape[0]
+        h1td = D.init_transDictBatch(self.prop.h1_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h1_action_dim,
+                                     items=("terminal_rewards",),
+                                     struct="torch", device=self.agent.device)
+        h2Loss = []
+        step = 0
+        done = False
+        done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.agent.device)
+        states = states0
+        obss = self.prop.getObss(states)
+        while not done and step<self.prop.h1_step:
+            h1td["states"][step, ...] = states[...].detach()
+            h1td["obss"][step, ...] = obss[...].detach()
+            if np.random.rand()<h1_explore_eps:
+                h1actions = self.agent.actor.uniSample(batch_size)
+            else:
+                h1actions = None
+            _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, prop_with_grad=prop_with_grad)
+            obss = self.prop.getObss(states)
+            h1td["actions"][step, ...] = h1as[...].detach()
+            h1td["next_states"][step, ...] = states[...].detach()
+            h1td["next_obss"][step, ...] = obss[...].detach()
+            h1td["rewards"][step, ...] = h1rs[...].detach()
+            h1td["dones"][step, ...] = dones[...].detach()
+            h1td["terminal_rewards"][step, ...] = trs[...].detach()
+
+            if off_policy_train and self.buffer.size>self.buffer.minimal_size:
+                self.agent.update(self.buffer.sample())
+
+            h2loss = -h2rs.mean()
+            h2Loss.append(h2loss)
+
+            done_flags = done_flags | dones
+            done = torch.all(done_flags)
+            step += 1
+        h2Loss = torch.mean(torch.stack(h2Loss))
+        return h1td, h2Loss
+    
+    def offPolicyTrain(self, n_epoch:int, n_episode:int, states_num=1):
+        keys = ["total_rewards"] + self.loss_keys
+        log_dict = dict(zip( keys, [[] for _ in range(len(keys))] ))
+        with Progress() as progress:
+            task = progress.add_task("epoch{0}".format(0), total=n_episode)
+            for i in range(n_epoch):
+                progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
+                progress.tasks[task].completed = 0
+                for _ in range(n_episode):
+                    trans_dict, _ = self.offPolicySim(states_num=states_num)
+                    tds = D.deBatch_dict(trans_dict)
+                    for d in tds:
+                        Loss = self.agent.update(d)
+                        d = D.torch_dict(d, device="cpu")
+                        self.buffer.from_dict(d)
+                    total_reward = trans_dict["rewards"].sum().item()/states_num
+                    log_dict["total_rewards"].append(total_reward)
+                    for i in range(len(self.loss_keys)):
+                        log_dict[self.loss_keys[i]].append(Loss[i])
+                    progress.update(task, advance=1)
+        # return log_dict # TODO: substitute tuple returns by dict
+        return tuple(log_dict.values())
 
 
 from env.dynamic import matrix
 class H2TreeTrainerAlter(H2TreeTrainer):
-    def __init__(self, prop: hirearchicalPropagator.H2CWDePropagator, agent: agent.H2Agent, tutor:agent.planTrackAgent, 
+    def __init__(self, prop: hierarchicalPropagator.H2CWDePropagator, agent: agent.H2Agent, tutor:agent.planTrackAgent, 
                  conGramMat_file=None, h2a_bound=0.06, buffer:replayBuffer=None, loss_keys:typing.List[str]=[]) -> None:
-        super().__init__(prop, agent)
+        super().__init__(prop, agent, h2a_bound=h2a_bound, buffer=buffer, loss_keys=loss_keys)
 
         self.transfer_time = prop.dt*prop.h2_step
         if conGramMat_file is None:
@@ -657,13 +720,6 @@ class H2TreeTrainerAlter(H2TreeTrainer):
         self.Phi0 = torch.from_numpy(Phi0).float().to(self.agent.device)
 
         self.tutor = tutor
-
-        self.h2a_bound = h2a_bound
-
-        self.buffer = buffer
-
-        self.loss_keys = loss_keys
-
 
     def transfer_u(self, states0, targets, step):
         tau = self.prop.dt*step
@@ -807,69 +863,3 @@ class H2TreeTrainerAlter(H2TreeTrainer):
             self.tree.update_regret_mc()
         trans_dict = self.tree.to_transdict()
         return trans_dict, H2loss, self.tree.root.V_target
-    
-    def offPolicySim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1, 
-                     off_policy_train=True,
-                     prop_with_grad=False):
-        if states0 is None:
-            states0 = self.prop.randomInitStates(states_num)
-        batch_size = states0.shape[0]
-        h1td = D.init_transDictBatch(self.prop.h1_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h1_action_dim,
-                                     items=("terminal_rewards",),
-                                     struct="torch", device=self.agent.device)
-        h2Loss = []
-        step = 0
-        done = False
-        done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.agent.device)
-        states = states0
-        obss = self.prop.getObss(states)
-        while not done and step<self.prop.h1_step:
-            h1td["states"][step, ...] = states[...].detach()
-            h1td["obss"][step, ...] = obss[...].detach()
-            if np.random.rand()<h1_explore_eps:
-                h1actions = self.agent.actor.uniSample(batch_size)
-            else:
-                h1actions = None
-            _, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, prop_with_grad=prop_with_grad)
-            obss = self.prop.getObss(states)
-            h1td["actions"][step, ...] = h1as[...].detach()
-            h1td["next_states"][step, ...] = states[...].detach()
-            h1td["next_obss"][step, ...] = obss[...].detach()
-            h1td["rewards"][step, ...] = h1rs[...].detach()
-            h1td["dones"][step, ...] = dones[...].detach()
-            h1td["terminal_rewards"][step, ...] = trs[...].detach()
-
-            if off_policy_train and self.buffer.size>self.buffer.minimal_size:
-                self.agent.update(self.buffer.sample())
-
-            h2loss = -h2rs.mean()
-            h2Loss.append(h2loss)
-
-            done_flags = done_flags | dones
-            done = torch.all(done_flags)
-            step += 1
-        h2Loss = torch.mean(torch.stack(h2Loss))
-        return h1td, h2Loss
-    
-    def offPolicyTrain(self, n_epoch:int, n_episode:int, states_num=1):
-        keys = ["total_rewards"] + self.loss_keys
-        log_dict = dict(zip( keys, [[] for _ in range(len(keys))] ))
-        with Progress() as progress:
-            task = progress.add_task("epoch{0}".format(0), total=n_episode)
-            for i in range(n_epoch):
-                progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
-                progress.tasks[task].completed = 0
-                for _ in range(n_episode):
-                    trans_dict, _ = self.offPolicySim(states_num=states_num)
-                    tds = D.deBatch_dict(trans_dict)
-                    for d in tds:
-                        Loss = self.agent.update(d)
-                        d = D.torch_dict(d, device="cpu")
-                        self.buffer.from_dict(d)
-                    total_reward = trans_dict["rewards"].sum().item()/states_num
-                    log_dict["total_rewards"].append(total_reward)
-                    for i in range(len(self.loss_keys)):
-                        log_dict[self.loss_keys[i]].append(Loss[i])
-                    progress.update(task, advance=1)
-        # return log_dict # TODO: substitute tuple returns by dict
-        return tuple(log_dict.values())

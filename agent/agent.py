@@ -530,20 +530,20 @@ class H2Agent(boundedRlAgent):
         dones = trans_dict["dones"].reshape((-1, 1))
         terminal_rewards = trans_dict["terminal_rewards"].reshape((-1, 1))
 
-        Q_values = self.Q(trans_dict["obss"], trans_dict["actions"])
-        Q_loss = F.mse_loss(Q_values, trans_dict["Q_targets"].reshape(Q_values.shape))
-        self.Q_opt.zero_grad()
-        Q_loss.backward()
-        self.Q_opt.step()
-
         # Q_values = self.Q(trans_dict["obss"], trans_dict["actions"])
-        # next_Q_values = self.Q(trans_dict["next_obss"], self.h1a(trans_dict["next_obss"]))*(~dones) + terminal_rewards*dones
-        # next_Q_values = next_Q_values.detach()
-        # td_Q_targets = rewards + self.gamma*next_Q_values
-        # Q_loss = F.mse_loss(Q_values, td_Q_targets)
+        # Q_loss = F.mse_loss(Q_values, trans_dict["Q_targets"].reshape(Q_values.shape))
         # self.Q_opt.zero_grad()
         # Q_loss.backward()
         # self.Q_opt.step()
+
+        Q_values = self.Q(trans_dict["obss"], trans_dict["actions"])
+        next_Q_values = self.Q(trans_dict["next_obss"], self.h1a(trans_dict["next_obss"]))*(~dones) + terminal_rewards*dones
+        next_Q_values = next_Q_values.detach()
+        td_Q_targets = rewards + self.gamma*next_Q_values
+        Q_loss = F.mse_loss(Q_values, td_Q_targets)
+        self.Q_opt.zero_grad()
+        Q_loss.backward()
+        self.Q_opt.step()
 
         actions = self.h1a(trans_dict["obss"])
         mc_loss = torch.mean(-trans_dict["regret_mc"]*torch.norm(actions-trans_dict["actions"],dim=-1))

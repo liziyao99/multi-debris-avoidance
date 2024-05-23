@@ -7,7 +7,7 @@ from data.buffer import replayBuffer
 import data.dicts as D
 import env.propagators
 import agent.agent as A
-import env.propagators.hirearchicalPropagator
+import env.propagators.hierarchicalPropagator
 import trainer
 from agent.agent import rlAgent
 from trainer.trainer import dummyTrainer
@@ -156,7 +156,7 @@ class mpH2TreeTrainer(mpTrainer):
         self.batch_size = batch_size
 
     def _init_trainer(self, device="cpu",):
-        p = env.propagators.hirearchicalPropagator.H2CWDePropagator(self.n_debris, device=device, 
+        p = env.propagators.hierarchicalPropagator.H2CWDePropagator(self.n_debris, device=device, 
                                                                     h1_step=10, h2_step=360)
         _, tutor = trainer.trainer.CWPTT(self.n_debris, device, "../model/planTrack3.ptd")
         if self.mode=="default":
