@@ -19,17 +19,23 @@ class rlAgent:
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modules = []
         self._init_actor(actor_hiddens, actor_lr)
         self._init_critic(critic_hiddens, critic_lr)
 
     def _init_actor(self, hiddens, lr):
         self.actor = fcNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
 
     def _init_critic(self, hiddens, lr):
         self.critic = fcNet(self.obs_dim, 1, hiddens).to(self.device)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
+        self.modules.append(self.critic)
 
+    def to(self, device):
+        for m in self.modules:
+            m.to(device)
 
     def act(self, obs:torch.Tensor):
         '''
@@ -100,12 +106,14 @@ class boundedRlAgent(rlAgent):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modules = []
         self._init_actor(actor_hiddens, action_upper_bounds, action_lower_bounds, actor_lr)
         self._init_critic(critic_hiddens, critic_lr)
 
     def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
         self.actor = boundedFcNet(self.obs_dim, self.action_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
 
     def _init_critic(self, hiddens, lr):
         return super()._init_critic(hiddens, lr)
@@ -135,6 +143,7 @@ class normalDistAgent(boundedRlAgent):
     def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
         self.actor = normalDistNet(self.obs_dim, self.action_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
 
     def update(self, trans_dict:dict):
         dict_torch = {}
@@ -188,6 +197,7 @@ class PPOClipAgent(boundedRlAgent):
     def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
         self.actor = normalDistNet(self.obs_dim, self.action_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
 
     def update(self, trans_dict:dict):
         dict_torch = {}
@@ -249,6 +259,7 @@ class planTrackAgent(boundedRlAgent):
         self.track_dim = plan_dim+pad_dim
 
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modules = []
 
         if state_weights is None:
             state_weights = torch.tensor([1.]*self.track_dim, device=self.device)
@@ -274,10 +285,12 @@ class planTrackAgent(boundedRlAgent):
             input obs and output plan (target state), calling `planner` is more appreciated.
         '''
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
 
     def _init_critic(self, hiddens, lr):
         self.critic = QNet(self.obs_dim, self.plan_dim, hiddens).to(self.device)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
+        self.modules.append(self.critic)
     
     def _init_tracker(self, hiddens, state_weights, control_weights, upper_bounds, lower_bounds, lr):
         self.tracker = trackNet(self.track_dim, self.control_dim, hiddens, state_weights, control_weights, upper_bounds, lower_bounds).to(self.device)
@@ -417,6 +430,7 @@ class H2Agent(boundedRlAgent):
         self.gamma = gamma
 
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modules = []
 
         if h1out_ub is None:
             h1out_ub = [ torch.inf]*h1out_dim
@@ -584,6 +598,7 @@ class SAC(boundedRlAgent):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modules = []
         self._init_actor(actor_hiddens, action_bounds, sigma_upper_bounds, actor_lr)
         self._init_critic(critic_hiddens, critic_lr)
         self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float, device=device)
@@ -596,6 +611,7 @@ class SAC(boundedRlAgent):
     def _init_actor(self, hiddens, action_bound, sigma_upper_bound, lr):
         self.actor = tanhNormalDistNet(self.obs_dim, self.action_dim, hiddens, action_bound, sigma_upper_bound).to(self.device)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
 
     def _init_critic(self, hiddens, lr):
         self.critic1 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
@@ -606,6 +622,7 @@ class SAC(boundedRlAgent):
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2 = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
         self.target_critic2.load_state_dict(self.critic2.state_dict())
+        self.modules += [self.critic1, self.critic2, self.target_critic1, self.target_critic2]
         self.critic = self.critic1
 
     def QMin(self, obss, actions, target=False):
@@ -721,12 +738,14 @@ class DDPG(boundedRlAgent):
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.target_actor = boundedFcNet(self.obs_dim, self.action_dim, hiddens, upper_bounds, lower_bounds).to(self.device)
         self.target_actor.load_state_dict(self.actor.state_dict())
+        self.modules += [self.actor, self.target_actor]
     
     def _init_critic(self, hiddens, lr):
         self.critic = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
         self.target_critic = QNet(self.obs_dim, self.action_dim, hiddens).to(self.device)
         self.target_critic.load_state_dict(self.critic.state_dict())
+        self.modules += [self.critic, self.target_critic]
 
     def act(self, obs:torch.Tensor):
         '''
@@ -738,6 +757,7 @@ class DDPG(boundedRlAgent):
         output = self.actor(obs)
         noise = torch.randn_like(output)*self.sigma
         sample = output + noise
+        sample = self.actor.clip(sample)
         return output, sample
 
     def soft_update(self, net, target_net):
@@ -750,8 +770,9 @@ class DDPG(boundedRlAgent):
         dones = trans_dict["dones"].reshape((-1, 1))
 
         next_q_values = self.target_critic(trans_dict["next_obss"], self.target_actor(trans_dict["next_obss"]))
+        # next_q_values = self.critic(trans_dict["next_obss"], self.actor(trans_dict["next_obss"]))
         q_targets = rewards + self.gamma*next_q_values*(~dones)
-        critic_loss = torch.mean(F.mse_loss(self.critic(trans_dict["obss"], trans_dict["actions"]), q_targets))
+        critic_loss = torch.mean(F.mse_loss(self.critic(trans_dict["obss"], trans_dict["actions"]), q_targets.detach()))
         self.critic_opt.zero_grad()
         critic_loss.backward()
         self.critic_opt.step()

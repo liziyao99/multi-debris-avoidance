@@ -124,27 +124,21 @@ def sac():
     mt.debug()
 
 if __name__ == "__main__":
-    from env.propagators.hierarchicalPropagator import H2CWDePropagator
-    from agent.agent import H2Agent
-    from trainer.trainer import H2TreeTrainer
-    prop = H2CWDePropagator(3, device="cuda", h1_step=10, h2_step=360)
-    h1out_ub = [ 1000]*3 + [ 3.6]*3
-    h1out_lb = [-1000]*3 + [-3.6]*3
-    h2out_ub = [ 0.06]*3
-    h2out_lb = [-0.06]*3
-    agent = H2Agent(obs_dim=prop.obs_dim,
-                    h1obs_dim=prop.obs_dim,
-                    h2obs_dim=6, 
-                    h1out_dim=prop.h1_action_dim, 
-                    h2out_dim=prop.h2_action_dim, 
-                    h1a_hiddens=[512]*8, 
-                    h2a_hiddens=[512]*8, 
-                    h1c_hiddens=[512]*8,
-                    h1out_ub=h1out_ub, 
-                    h1out_lb=h1out_lb, 
-                    h2out_ub=h2out_ub, 
-                    h2out_lb=h2out_lb, 
-                    device="cuda")
-    T = H2TreeTrainer(prop, agent,)
+    from env.propagators.hierarchicalPropagator import impulsePropagator
+    from agent.net import boundedFcNet
+    import torch
+    import data.dicts as D
+    import matplotlib.pyplot as plt
+    from agent.net import fcNet
 
-    T.h1Sim(states_num=128, train_h2a=True)
+    # impulse_bound = 0.6
+    impulse_bound = 5000.
+    prop = impulsePropagator(3, device="cuda", h1_step=10, h2_step=360, impulse_bound=impulse_bound)
+    h2out_ub = [ impulse_bound]*3
+    h2out_lb = [-impulse_bound]*3
+    actor = boundedFcNet(prop.n_debris*6, 3, [512]*6, h2out_ub, h2out_lb).to("cuda")
+    # actor = fcNet(prop.n_debris*6, 3, [512]*6).to(prop.device)
+    opt = torch.optim.SGD(actor.parameters(), lr=0.001)
+
+    s0 = prop.randomInitStates(1)
+    prop.best_targets(s0, population=100, max_loop=20000)

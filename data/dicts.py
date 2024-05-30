@@ -160,9 +160,11 @@ def numpy_dict(trans_dict:dict) -> dict:
             trans_dict[key] = trans_dict[key].detach().cpu().numpy()
     return trans_dict
 
-def torch_dict(trans_dict:dict, device=None) -> dict:
+def torch_dict(trans_dict:dict, device=None, detach=False) -> dict:
     for key in trans_dict.keys():
         if type(trans_dict[key]) is np.ndarray:
             trans_dict[key] = torch.from_numpy(trans_dict[key])
         trans_dict[key] = trans_dict[key].to(device=device)
+        if detach:
+            trans_dict[key] = trans_dict[key].detach()
     return trans_dict

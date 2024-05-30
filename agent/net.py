@@ -32,6 +32,7 @@ class fcNet(nn.Module):
 
     def post_process(self, x):
         '''
+            will be called after fc layers.
             to be overloaded.
         '''
         return x

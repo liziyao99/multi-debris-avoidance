@@ -6,7 +6,7 @@ def affine(x, s0, t0, s1, t1):
 
 def dotEachRow(a, b, keepdim=False):
     prod = a*b
-    if type(a) is torch.Tensor:
+    if isinstance(a, torch.Tensor):
         dot = torch.sum(prod, dim=-1, keepdim=keepdim)
     else:
         dot = np.sum(prod, axis=-1, keepdims=keepdim)
@@ -55,6 +55,21 @@ def compute_advantage(gamma, lmd, td_delta:torch.Tensor):
 
 def smoothStepFunc(x:torch.Tensor, loc=0., scale=1., k=1., bias=0.):
     '''
-        return: `scale/(1+torch.exp(-k*(x-loc)))+bias`
+        return: `scale/(1+exp(-k*(x-loc)))+bias`
     '''
     return scale/(1+torch.exp(-k*(x-loc)))+bias
+
+def penaltyFunc(x:torch.Tensor, k=2.):
+    '''
+        return: `-log(1+exp(-k*x))`
+    '''
+    return -torch.log(1+torch.exp(-k*x))
+
+def penaltyFuncPosi(x:torch.Tensor, k=0.25):
+    '''
+        args: 
+            `x`: positive value.
+        return: 
+            `log(tanh(k*x))`
+    '''
+    return torch.log(torch.tanh(k*x))

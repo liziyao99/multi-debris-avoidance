@@ -20,6 +20,9 @@ class gymTrainer:
     def reset(self):
         return self.env.reset()
     
+    def close(self):
+        self.env.close()
+    
     @property
     def obs_dim(self):
         return self.env.observation_space.shape[0]

@@ -94,6 +94,7 @@ class outputBoundConfig_mp(outputBoundConfig):
 
     def activate(self, x:torch.Tensor, type:int, idx:int):
         if type==0: # both side
+            # span = self.upper_bounds[idx].item()-self.lower_bounds[idx].item()
             return affine(torch.tanh(x), -1, 1, self.lower_bounds[idx].item(), self.upper_bounds[idx].item())
         elif type==1: # only upper
             return (-torch.relu(x)+self.upper_bounds[idx].item())
