@@ -97,6 +97,34 @@ class boundedFcNet(fcNet):
         '''
         return self.obc.uniSample(size)
     
+
+class LSTM_FC(boundedFcNet):
+    def __init__(self, 
+                 n_feature: int, 
+                 n_output: int, 
+                 n_lstm_hidden: int, 
+                 n_lstm_layer: int,
+                 fc_hiddens: torch.List[int], 
+                 upper_bounds: torch.Tensor, 
+                 lower_bounds: torch.Tensor,
+                 batch_first=False,
+                ):
+        super().__init__(n_lstm_hidden, n_output, fc_hiddens, upper_bounds, lower_bounds)
+        self.n_feature = n_feature
+        self.n_lstm_hidden = n_lstm_hidden
+        self.n_lstm_layer = n_lstm_layer
+        self.lstm = nn.LSTM(n_feature, n_lstm_hidden, n_lstm_layer, batch_first=batch_first)
+
+    def forward(self, x, h0c0:typing.Tuple[torch.Tensor]=None):
+        '''
+            `x` shape: (batch, seq, feature)
+            `h0` shape: (n_lstm_layer, batch, n_hidden)
+            `c0` shape: (n_lstm_layer, batch, n_hidden)
+        '''
+        lstm_out, (hn, cn) = self.lstm(x, h0c0)
+        fc_out = self.fc_layers(lstm_out)
+        return self.post_process(fc_out), (hn, cn)
+    
 class normalDistNet(boundedFcNet):
     def __init__(self, 
                  n_feature: int, 

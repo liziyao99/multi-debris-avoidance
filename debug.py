@@ -132,7 +132,7 @@ if __name__ == "__main__":
     from agent.net import fcNet
 
     # impulse_bound = 0.6
-    impulse_bound = 5000.
+    impulse_bound = 0.6
     prop = impulsePropagator(3, device="cuda", h1_step=10, h2_step=360, impulse_bound=impulse_bound)
     h2out_ub = [ impulse_bound]*3
     h2out_lb = [-impulse_bound]*3
@@ -140,5 +140,5 @@ if __name__ == "__main__":
     # actor = fcNet(prop.n_debris*6, 3, [512]*6).to(prop.device)
     opt = torch.optim.SGD(actor.parameters(), lr=0.001)
 
-    s0 = prop.randomInitStates(1)
-    prop.best_targets(s0, population=100, max_loop=20000)
+    s0 = prop.randomInitStates(2)
+    prop.best_impulses(s0, population=100, max_loop=20000, impulse_num=2)

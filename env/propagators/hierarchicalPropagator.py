@@ -1,8 +1,10 @@
 import torch
 import numpy as np
+import typing
+from rich.progress import Progress
+
 from env.dynamic import matrix
 from env.dynamic import cwutils
-import typing
 import utils
 import data.dicts as D
 
@@ -679,26 +681,89 @@ class impulsePropagator(optCWPropagator):
         Rewards = torch.stack(Rewards, dim=1)
         return targets.detach(), best_i, Rewards
 
-    def best_impulses(self, states:torch.Tensor, population=1000, lr=1e-1, max_loop=20000):
-        batch_size = states.shape[0]
-        states = torch.tile(states, (population, 1, 1))
-        states = states.transpose(0,1)
-        states = states.reshape((batch_size*population, self.state_dim))
+    def best_impulses(self, states:torch.Tensor, population=100, impulse_num=1, lr=1e-1, max_loop=1000, horizon=None):
+        horizon = self.h2_step if horizon is None else horizon
+        batch_size = states.shape[0] # 1
+        states0 = torch.tile(states, (population, 1, 1))
+        states0 = states0.transpose(0,1)
+        states0 = states0.reshape((batch_size*population, self.state_dim))
+        
         impulses0_dist = torch.distributions.Uniform(low=-self.impulse_bound, high=self.impulse_bound)
-        impulses = impulses0_dist.sample((batch_size*population, 3))
-        impulses = torch.tensor(impulses, requires_grad=True, device=self.device)
-        opt = torch.optim.Adam([impulses], lr=lr)
+        _impulses = impulses0_dist.sample((batch_size*population, impulse_num, 3))
+        _impulses = torch.tensor(_impulses, requires_grad=True, device=self.device)
+        opt = torch.optim.Adam([_impulses], lr=lr)
 
-        states[:,3:6] = states[:,3:6]+impulses
-        # TODO
+        dummy_h1actions = torch.zeros((batch_size*population, 3)).to(self.device)
+
+        Best_Rewards_List = []
+        with Progress() as progress:
+            task = progress.add_task("finding best impulses:", total=max_loop)
+            for i in range(max_loop):
+                states = states0.clone()
+                _impulses_norm = torch.norm(_impulses, dim=2, keepdim=True)
+                impulses_unit = _impulses/_impulses_norm
+                impulses_norm = torch.tanh(_impulses_norm)*self.impulse_bound
+                impulses = impulses_unit*impulses_norm
+                # impulses = torch.tanh(_impulses)*self.impulse_bound
+                # Rewards = torch.zeros((batch_size*population,), device=self.device, requires_grad=True)
+                # Rewards = -torch.sum(torch.norm(impulses/self.impulse_bound, dim=2), dim=1)/horizon
+                # Rewards = -torch.sum(torch.abs(impulses/self.impulse_bound), dim=(1,2))/horizon
+                Rewards = -torch.sum(impulses_norm.squeeze(-1), dim=1)/horizon
+                for j in range(impulse_num):
+                    states[:,3:6] = states[:,3:6] + impulses[:,j]
+                    for k in range(horizon):
+                        states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=dummy_h1actions, actions=None, require_grad=True)
+                        Rewards = Rewards + h2r
+                        done = torch.all(dones)
+                loss = -Rewards.mean()
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+                Rewards = Rewards.reshape((batch_size, population))
+                best_r, best_i = torch.max(Rewards.detach(), dim=1)
+                Best_Rewards_List.append(best_r.detach())
+                progress.update(task, advance=1)
+        Best_Rewards_List = torch.stack(Best_Rewards_List, dim=1)
+        impulses = impulses.detach().reshape((batch_size, population, impulse_num, 3))
+        return impulses, best_i, Best_Rewards_List
+    
+    def impulses_test(self, states:torch.Tensor, impulses:torch.Tensor, horizon=None):
+        horizon = self.h2_step if horizon is None else horizon
+        batch_size = states.shape[0]
+        impulse_num = impulses.shape[1]
+        dummy_h1actions = torch.zeros((batch_size, 3)).to(self.device)
+        obss = self.getObss(states)
+        trans_dict_h1 = D.init_transDictBatch(length=impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
+        trans_dict_h2 = D.init_transDictBatch(length=horizon*impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
+        step = 0
+        for i in range(impulse_num):
+            trans_dict_h1["states"][i,...] = states[...]
+            trans_dict_h1["obss"][i,...] = obss[...]
+            trans_dict_h1["actions"][i,...] = impulses[:,i]
+            trans_dict_h2["actions"][step,...] = impulses[:,i]
+            for j in range(horizon):
+                trans_dict_h2["states"][step,...] = states[...]
+                trans_dict_h2["obss"][step,...] = obss[...]
+                if j==0:
+                    states[:,3:6] = states[:,3:6] + impulses[:,i]
+                states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=dummy_h1actions, actions=None, require_grad=True)
+                trans_dict_h2["rewards"][step] = h2r
+                trans_dict_h2["next_states"][step,...] = states[...]
+                trans_dict_h2["obss"][step,...] = obss[...]
+                done = torch.all(dones)
+                step += 1
+            trans_dict_h1["next_states"][i,...] = states[...]
+            trans_dict_h1["next_obss"][i,...] = obss[...]
+        return trans_dict_h1, trans_dict_h2
 
     def propagate(self, states: torch.Tensor, h1_actions: torch.Tensor, actions: torch.Tensor, require_grad=False):
         # impulse
-        decoded = self.statesDecode(states)
+        decoded = self.statesDecode(states, require_grad=require_grad)
         primal = decoded["primal"].squeeze(1)
-        primal[:,3:] = torch.where(decoded["h2_step"]==0., primal[:,3:]+h1_actions, primal[:,3:]) # apply impulse if at beginning of h1 stage 
+        h1_actions = torch.where(decoded["h1_step"]==0., h1_actions, torch.zeros_like(h1_actions))
+        primal[:,3:] = primal[:,3:]+h1_actions # apply impulse if at beginning of h1 stage 
         decoded["primal"] = primal.unsqueeze(1)
-        states = self.statesEncode(decoded)
+        states = self.statesEncode(decoded, require_grad=require_grad)
         # propagate
         next_states = self.getNextStates(states, require_grad=require_grad)
         h1rewards = torch.zeros(states.shape[0], device=self.device) # dummy
@@ -732,7 +797,8 @@ class impulsePropagator(optCWPropagator):
             else:
                 impulse_rewards = -torch.sum(impulse**2, dim=-1)
 
-            rewards = (d2d_rewards+d2p_rewards+impulse_rewards)/(self.h2_step*self.h1_step)
+            # rewards = (d2d_rewards+d2p_rewards+impulse_rewards)/(self.h2_step*self.h1_step)
+            rewards = (d2d_rewards+impulse_rewards)/(self.h2_step*self.h1_step)
             return rewards
     
     def getNextStates(self, states: torch.Tensor, require_grad=False) -> torch.Tensor:
