@@ -13,7 +13,7 @@ class fcNet(nn.Module):
         super().__init__()
         self.n_feature = n_feature
         self.n_output = n_output
-        self.__dummy_param = nn.Parameter(torch.empty(0))
+        self._dummy_param = nn.Parameter(torch.empty(0))
         
         fc = []
         for i in range(len(n_hiddens)):
@@ -24,7 +24,7 @@ class fcNet(nn.Module):
 
     @property
     def device(self):
-        return self.__dummy_param.device
+        return self._dummy_param.device
     
     def forward(self, x):
         fc_out = self.fc_layers(x)
@@ -97,8 +97,7 @@ class boundedFcNet(fcNet):
         '''
         return self.obc.uniSample(size)
     
-
-class LSTM_FC(boundedFcNet):
+class boundedLSTM(boundedFcNet):
     def __init__(self, 
                  n_feature: int, 
                  n_output: int, 
@@ -109,11 +108,28 @@ class LSTM_FC(boundedFcNet):
                  lower_bounds: torch.Tensor,
                  batch_first=False,
                 ):
-        super().__init__(n_lstm_hidden, n_output, fc_hiddens, upper_bounds, lower_bounds)
+        if len(fc_hiddens)==0:
+            n_output = n_lstm_hidden
+    
+        nn.Module.__init__(self)
+        self.n_feature = n_feature
+        self.n_output = n_output
+        self._dummy_param = nn.Parameter(torch.empty(0))
+
         self.n_feature = n_feature
         self.n_lstm_hidden = n_lstm_hidden
         self.n_lstm_layer = n_lstm_layer
         self.lstm = nn.LSTM(n_feature, n_lstm_hidden, n_lstm_layer, batch_first=batch_first)
+        
+        fc = []
+        if len(fc_hiddens) > 0:
+            for i in range(len(fc_hiddens)):
+                fc.append(nn.Linear(n_lstm_hidden if i == 0 else fc_hiddens[i-1], fc_hiddens[i]))
+                fc.append(nn.ReLU())
+            fc.append(nn.Linear(fc_hiddens[-1], n_output))
+        self.fc_layers = nn.Sequential(*fc)
+
+        self.obc = outputBoundConfig(upper_bounds, lower_bounds)
 
     def forward(self, x, h0c0:typing.Tuple[torch.Tensor]=None):
         '''
@@ -124,6 +140,7 @@ class LSTM_FC(boundedFcNet):
         lstm_out, (hn, cn) = self.lstm(x, h0c0)
         fc_out = self.fc_layers(lstm_out)
         return self.post_process(fc_out), (hn, cn)
+
     
 class normalDistNet(boundedFcNet):
     def __init__(self, 
@@ -261,7 +278,7 @@ class QNet(fcNet):
         self.n_action = n_action
         self.n_feature = n_obs+n_action
         self.n_output = 1
-        self.__dummy_param = nn.Parameter(torch.empty(0))
+        self._dummy_param = nn.Parameter(torch.empty(0))
         
         fc = []
         for i in range(len(n_hiddens)):

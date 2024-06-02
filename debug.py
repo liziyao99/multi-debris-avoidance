@@ -125,20 +125,28 @@ def sac():
 
 if __name__ == "__main__":
     from env.propagators.hierarchicalPropagator import impulsePropagator
-    from agent.net import boundedFcNet
     import torch
-    import data.dicts as D
     import matplotlib.pyplot as plt
-    from agent.net import fcNet
 
-    # impulse_bound = 0.6
-    impulse_bound = 0.6
-    prop = impulsePropagator(3, device="cuda", h1_step=10, h2_step=360, impulse_bound=impulse_bound)
-    h2out_ub = [ impulse_bound]*3
-    h2out_lb = [-impulse_bound]*3
-    actor = boundedFcNet(prop.n_debris*6, 3, [512]*6, h2out_ub, h2out_lb).to("cuda")
-    # actor = fcNet(prop.n_debris*6, 3, [512]*6).to(prop.device)
-    opt = torch.optim.SGD(actor.parameters(), lr=0.001)
+    impulse_bound = 0.1
+    prop = impulsePropagator(3, device="cuda", h1_step=30, h2_step=120, 
+                            impulse_bound=impulse_bound, safe_dist=2000.)
+    batch_size = 256
+    max_loop = 30
+    impulse_num = 20
 
-    s0 = prop.randomInitStates(2)
-    prop.best_impulses(s0, population=100, max_loop=20000, impulse_num=2)
+    from agent.net import boundedLSTM
+    upper_bounds = [ impulse_bound]*3
+    lower_bounds = [-impulse_bound]*3
+    lstm = boundedLSTM(n_feature=prop.obs_dim, 
+                n_output=3, 
+                n_lstm_hidden=128, 
+                n_lstm_layer=12, 
+                fc_hiddens=[128]*4, 
+                upper_bounds=upper_bounds, 
+                lower_bounds=lower_bounds,
+                batch_first=True).to("cuda")
+    opt1 = torch.optim.Adam(lstm.parameters(), lr=0.01)
+
+    obss = torch.randn((impulse_num, batch_size, prop.obs_dim)).to(prop.device)
+    out = lstm(obss)

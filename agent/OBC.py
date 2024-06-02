@@ -104,7 +104,10 @@ class outputBoundConfig_mp(outputBoundConfig):
             return x
         
     def __call__(self, x:torch.Tensor):
+        shape = x.shape
+        x = x.view((-1, self.n_output))
         y = torch.zeros_like(x)
         for i in range(self.n_output):
             y[:,i] = self.activate(x[:,i], type=self.activation_types[i], idx=i)
+        y = y.reshape(shape)
         return y
