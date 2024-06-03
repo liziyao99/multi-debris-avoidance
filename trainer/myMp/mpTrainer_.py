@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import torch.multiprocessing as mp
 import rich.progress
 import typing
@@ -217,9 +218,9 @@ class mpH2TreeTrainer(mpTrainer):
         if sim_kwargs is not None:
             for w in self.workers: w.sim_kwargs = sim_kwargs
         plot = dataPlot(["true_values", "critic_loss", "ddpg_loss", "mc_loss"])
+        critic_loss, ddpg_loss, mc_loss, true_values = [], [], [], []
         with rich.progress.Progress() as pbar:
             task1 = pbar.add_task("", total=total_episode)
-            critic_loss, ddpg_loss, mc_loss, true_values = [], [], [], []
             for i in range(n_epoch):
                 pbar.tasks[task1].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 pbar.tasks[task1].completed = 0
@@ -275,3 +276,160 @@ class mpH2TreeTrainer(mpTrainer):
             _mc.append(mc_l)
             _ddpg.append(ddpg_l)
         return v, np.mean(_Q), np.mean(_mc), np.mean(_ddpg)
+    
+
+
+class impulsesWorker(mpWorker):
+    '''
+        NOTE: a Process can not start twice.
+    '''
+    def __init__(self, 
+                 prop:env.propagators.hierarchicalPropagator.impulsePropagator, 
+                 name:str,
+                 batch_size=256,
+                 population=100, 
+                 impulse_num=20, 
+                 prop_lr=1e-1, 
+                 max_loop=15,
+                 inq:mp.Queue=None, outq:mp.Queue=None,) -> None:
+        mp.Process.__init__(self)
+        self.prop = prop
+        self.name = name
+        self.inq = inq
+        self.outq = outq
+        self.batch_size = batch_size
+        self.population = population
+        self.impulse_num = impulse_num
+        self.prop_lr = prop_lr
+        self.max_loop = max_loop
+
+    def simulate(self, **kwargs):
+        states = self.prop.randomInitStates(self.batch_size)
+        imp, best_i, Best_Rewards_List = self.prop.best_impulses(states, self.population, self.impulse_num, self.prop_lr, self.max_loop)
+        best_imp = torch.zeros((imp.shape[0], imp.shape[2], imp.shape[3]), device=imp.device)
+        for i in range(self.batch_size):
+            best_imp[i,...] = imp[i,best_i[i],...]
+        best_imp_ = best_imp.transpose(0,1)
+        td1, td2 = self.prop.impulses_test(states, best_imp)
+        return td1, best_imp_ # shape (seq_length, batch_size, ...)
+
+    def run(self):
+        print(f"{self.name} running. Device:{self.prop.device}.")
+        while (flag := self.inq.get()) is not None:
+            obj = self.simulate()
+            self.outq.put(obj)
+        self.outq.put(None)
+        print(f"{self.name} done.")
+
+    def setQ(self, inq:mp.Queue=None, outq:mp.Queue=None):
+        self.inq = inq if inq is not None else self.inq
+        self.outq = outq if outq is not None else self.outq
+
+    @property
+    def agent(self) -> rlAgent:
+        raise NotImplementedError
+    
+
+class mpImpulsesTrainer(mpTrainer):
+    def __init__(self, 
+                 n_process:int, 
+                 model:torch.nn.Module, 
+                 n_debris:int,
+                 impulse_bound:float,
+                 buffer:replayBuffer=None, 
+                 batch_size=256,
+                 population=100, 
+                 impulse_num=20, 
+                 prop_lr=1e-1, 
+                 lr=1e-2,
+                 max_loop=15, main_device="cuda"):
+        self.model = model.to(main_device)
+        self.main_device = main_device
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+
+        self.prop_args = {
+            "n_debris": n_debris,
+            "impulse_bound": impulse_bound,
+        }
+        self.worker_args = {
+            "batch_size": batch_size,
+            "population": population,
+            "impulse_num": impulse_num,
+            "prop_lr": prop_lr,
+            "max_loop": max_loop,
+        }
+        
+        self.main_initialized = False
+        self.main_prop = self._init_prop(main_device)
+        self.main_initialized = True
+
+        self.n_process = n_process
+        self.workers = []
+        self._reset_workers()
+        self.buffer = buffer
+
+    def _init_prop(self, device="cpu",):
+        kwargs = self.prop_args.copy()
+        kwargs["device"] = device
+        p = env.propagators.hierarchicalPropagator.impulsePropagator(**kwargs)
+        return p
+    
+    def _reset_workers(self):
+        for w in self.workers:
+            w.close()
+            del w
+        self.workers = []
+        for i in range(self.n_process):
+            prop = self._init_prop()
+            self.workers.append(impulsesWorker(prop=prop, name=f"worker{i}", **self.worker_args))
+
+    def pull(self, idx):
+        pass
+    
+    def train(self, n_epoch:int, total_episode:int, folder="../model/", sim_kwargs:dict=None):
+        plot = dataPlot(["loss"])
+        loss_list = []
+        with rich.progress.Progress() as pbar:
+            task1 = pbar.add_task("", total=total_episode)
+            for i in range(n_epoch):
+                pbar.tasks[task1].description = "epoch {0} of {1}".format(i+1, n_epoch)
+                pbar.tasks[task1].completed = 0
+                [self.pull(idx) for idx in range(self.n_process)] # mp agents pull parameters from main agent
+                inq, outq = self._init_train(total_episode)
+                [w.start() for w in self.workers]
+                count = 0
+                while count<self.n_process: # mp workers running
+                    if outq.qsize(): # new result in outq
+                        if (obj := outq.get()) is not None:
+                            td1 = obj[0]
+                            obss = td1["obss"].to(self.main_device)
+                            best_imp_ = obj[1].to(self.main_device).detach()
+                            imp = self.model(obss)
+                            loss = torch.nn.functional.mse_loss(imp, best_imp_)
+                            self.opt.zero_grad()
+                            loss.backward()
+                            self.opt.step()
+                            loss_list.append(loss.item())
+                            if pbar.tasks[task1].completed > plot.min_window_size:
+                                plot.set_data((loss_list))
+                            pbar.update(task1, advance=1)
+                        else:
+                            count += 1
+                [w.join() for w in self.workers]
+                np.savez(folder+"log.npz", 
+                        loss = np.array(loss_list)
+                        )
+                plot.save_fig(folder+"log.png")
+                torch.save(self.model.state_dict(), folder+"implusesModel.ptd")
+                self._reset_workers()
+        return
+    
+    def debug(self):
+        obj = self.debug1p()
+        td1 = obj[0]
+        states = td1["states"].to(self.main_device)
+        obss = td1["obss"].to(self.main_device)
+        best_imp_ = obj[1].to(self.main_device).detach()
+        imp = self.model(obss)
+        loss = torch.nn.functional.mse_loss(imp, best_imp_)
+        return td1, best_imp_, loss

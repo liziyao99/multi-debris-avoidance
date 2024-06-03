@@ -139,6 +139,16 @@ class boundedLSTM(boundedFcNet):
         '''
         lstm_out, (hn, cn) = self.lstm(x, h0c0)
         fc_out = self.fc_layers(lstm_out)
+        return self.post_process(fc_out)
+    
+    def forward_with_hidden(self, x, h0c0:typing.Tuple[torch.Tensor]=None):
+        '''
+            `x` shape: (batch, seq, feature)
+            `h0` shape: (n_lstm_layer, batch, n_hidden)
+            `c0` shape: (n_lstm_layer, batch, n_hidden)
+        '''
+        lstm_out, (hn, cn) = self.lstm(x, h0c0)
+        fc_out = self.fc_layers(lstm_out)
         return self.post_process(fc_out), (hn, cn)
 
     

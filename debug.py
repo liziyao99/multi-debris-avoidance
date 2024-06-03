@@ -124,29 +124,18 @@ def sac():
     mt.debug()
 
 if __name__ == "__main__":
-    from env.propagators.hierarchicalPropagator import impulsePropagator
-    import torch
-    import matplotlib.pyplot as plt
-
-    impulse_bound = 0.1
-    prop = impulsePropagator(3, device="cuda", h1_step=30, h2_step=120, 
-                            impulse_bound=impulse_bound, safe_dist=2000.)
-    batch_size = 256
-    max_loop = 30
-    impulse_num = 20
-
+    from trainer.myMp.mpTrainer_ import mpImpulsesTrainer
     from agent.net import boundedLSTM
+    impulse_bound = 0.1
     upper_bounds = [ impulse_bound]*3
     lower_bounds = [-impulse_bound]*3
-    lstm = boundedLSTM(n_feature=prop.obs_dim, 
+    actor = boundedLSTM(n_feature=47, 
                 n_output=3, 
-                n_lstm_hidden=128, 
-                n_lstm_layer=12, 
-                fc_hiddens=[128]*4, 
+                n_lstm_hidden=3, 
+                n_lstm_layer=16, 
+                fc_hiddens=[], 
                 upper_bounds=upper_bounds, 
                 lower_bounds=lower_bounds,
-                batch_first=True).to("cuda")
-    opt1 = torch.optim.Adam(lstm.parameters(), lr=0.01)
-
-    obss = torch.randn((impulse_num, batch_size, prop.obs_dim)).to(prop.device)
-    out = lstm(obss)
+                batch_first=False).to("cuda")
+    T = mpImpulsesTrainer(8, actor, n_debris=3, impulse_bound=impulse_bound, max_loop=1)
+    obj = T.debug1p()
