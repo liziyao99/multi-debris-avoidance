@@ -736,6 +736,9 @@ class impulsePropagator(optCWPropagator):
         trans_dict_h1 = D.init_transDictBatch(length=impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
         trans_dict_h2 = D.init_transDictBatch(length=horizon*impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
         step = 0
+        impulses = impulses.detach()
+        impulses_norm = torch.norm(impulses, dim=-1)
+        Rewards = -torch.sum(impulses_norm, dim=1)/horizon
         for i in range(impulse_num):
             trans_dict_h1["states"][i,...] = states[...]
             trans_dict_h1["obss"][i,...] = obss[...]
@@ -746,7 +749,8 @@ class impulsePropagator(optCWPropagator):
                 trans_dict_h2["obss"][step,...] = obss[...]
                 if j==0:
                     states[:,3:6] = states[:,3:6] + impulses[:,i]
-                states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=dummy_h1actions, actions=None, require_grad=True)
+                states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=dummy_h1actions, actions=None, require_grad=False)
+                Rewards = Rewards + h2r
                 trans_dict_h2["rewards"][step] = h2r
                 trans_dict_h2["next_states"][step,...] = states[...]
                 trans_dict_h2["obss"][step,...] = obss[...]
@@ -754,7 +758,41 @@ class impulsePropagator(optCWPropagator):
                 step += 1
             trans_dict_h1["next_states"][i,...] = states[...]
             trans_dict_h1["next_obss"][i,...] = obss[...]
-        return trans_dict_h1, trans_dict_h2
+        return trans_dict_h1, trans_dict_h2, Rewards
+    
+    def impulses_test_actor(self, states:torch.Tensor, actor:torch.nn.Module, horizon=None, impulse_num=None):
+        horizon = self.h2_step if horizon is None else horizon
+        impulse_num = self.h1_step if impulse_num is None else impulse_num
+        batch_size = states.shape[0]
+        dummy_h1actions = torch.zeros((batch_size, 3)).to(self.device)
+        obss = self.getObss(states)
+        trans_dict_h1 = D.init_transDictBatch(length=impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
+        trans_dict_h2 = D.init_transDictBatch(length=horizon*impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
+        step = 0
+        Rewards = torch.zeros(batch_size, device=self.device)
+        for i in range(impulse_num):
+            impulse = actor(obss).detach()
+            impulse_norm = torch.norm(impulse, dim=-1)
+            Rewards = Rewards - impulse_norm/horizon
+            trans_dict_h1["states"][i,...] = states[...]
+            trans_dict_h1["obss"][i,...] = obss[...]
+            trans_dict_h1["actions"][i,...] = impulse[...]
+            trans_dict_h2["actions"][step,...] = impulse[...]
+            for j in range(horizon):
+                trans_dict_h2["states"][step,...] = states[...]
+                trans_dict_h2["obss"][step,...] = obss[...]
+                if j==0:
+                    states[:,3:6] = states[:,3:6] + impulse[...]
+                states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=dummy_h1actions, actions=None, require_grad=False)
+                Rewards = Rewards + h2r
+                trans_dict_h2["rewards"][step] = h2r
+                trans_dict_h2["next_states"][step,...] = states[...]
+                trans_dict_h2["obss"][step,...] = obss[...]
+                done = torch.all(dones)
+                step += 1
+            trans_dict_h1["next_states"][i,...] = states[...]
+            trans_dict_h1["next_obss"][i,...] = obss[...]
+        return trans_dict_h1, trans_dict_h2, Rewards
 
     def propagate(self, states: torch.Tensor, h1_actions: torch.Tensor, actions: torch.Tensor, require_grad=False):
         # impulse
@@ -771,7 +809,7 @@ class impulsePropagator(optCWPropagator):
         dones, terminal_rewards = self.getDones(next_states, require_grad=require_grad)
         next_obss = self.getObss(next_states, require_grad=require_grad)
         return next_states, next_obss, h1rewards, h2rewards, dones, terminal_rewards
-        
+      
     def getH2Rewards(self, states: torch.Tensor, impulse:torch.Tensor, require_grad=False) -> torch.Tensor:
         with torch.set_grad_enabled(require_grad):
             decoded = self.statesDecode(states)
@@ -817,37 +855,39 @@ class impulsePropagator(optCWPropagator):
             next_states = self.statesEncode(decoded, require_grad)
             return next_states
         
-    def impulseOpt(self, actor, batch_size=128, horizon=None, sigma=0.01):
+    def actor_opt(self, actor, batch_size=128, horizon=None, impulse_num=None):
         '''
             returns: `loss`, `trans_dict`
         '''
-        horizon = self.h1_step*self.h2_step if horizon is None else horizon
-        s0 = self.randomInitStates(batch_size)
-        trans_dict = D.init_transDictBatch(horizon, batch_size, self.state_dim, self.obs_dim, self.h1_action_dim,
-                                        struct="torch", device="cuda")
-        states = s0
+        horizon = self.h2_step if horizon is None else horizon
+        impulse_num = self.h1_step if impulse_num is None else impulse_num
+        states = self.randomInitStates(batch_size)
+        dummy_h1actions = torch.zeros((batch_size, 3)).to(self.device)
         obss = self.getObss(states)
-        done = False
-        rewards = []
-        for i in range(horizon):
-            trans_dict["states"][i,...] = states[...]
-            trans_dict["obss"][i,...] = obss[...]
+        trans_dict_h1 = D.init_transDictBatch(length=impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
+        trans_dict_h2 = D.init_transDictBatch(length=horizon*impulse_num, batch_size=batch_size, state_dim=self.state_dim, obs_dim=self.obs_dim, action_dim=3, struct="torch", device=self.device)
+        step = 0
+        Rewards = torch.zeros(batch_size, device=self.device, requires_grad=True)
+        for i in range(impulse_num):
             impulse = actor(obss)
-            if sigma:
-                if self.impulse_bound and not np.isinf(self.impulse_bound):
-                    noise = torch.randn_like(impulse)*self.impulse_bound*sigma
-                else:
-                    noise = torch.randn_like(impulse)*sigma
-                impulse = impulse + noise
-            states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=impulse, actions=None, require_grad=True)
-            trans_dict["actions"][i,...] = impulse[...]
-            trans_dict["next_states"][i,...] = states[...]
-            trans_dict["next_obss"][i,...] = obss[...]
-            trans_dict["rewards"][i,...] = h2r[...]
-            trans_dict["dones"][i,...] = dones[...]
-            rewards.append(h2r)
-            done = torch.all(dones)
-        rewards = torch.stack(rewards, dim=1)
-        rewards = torch.sum(rewards, dim=1)
-        loss = -rewards.mean()
-        return loss, trans_dict
+            impulse_norm = torch.norm(impulse, dim=-1)
+            Rewards = Rewards - impulse_norm/horizon
+            trans_dict_h1["states"][i,...] = states[...]
+            trans_dict_h1["obss"][i,...] = obss[...]
+            trans_dict_h1["actions"][i,...] = impulse[...]
+            trans_dict_h2["actions"][step,...] = impulse[...]
+            for j in range(horizon):
+                trans_dict_h2["states"][step,...] = states[...]
+                trans_dict_h2["obss"][step,...] = obss[...]
+                if j==0:
+                    states[:,3:6] = states[:,3:6] + impulse[...]
+                states, obss, h1r, h2r, dones, _ = self.propagate(states, h1_actions=dummy_h1actions, actions=None, require_grad=True)
+                Rewards = Rewards + h2r
+                trans_dict_h2["rewards"][step] = h2r
+                trans_dict_h2["next_states"][step,...] = states[...]
+                trans_dict_h2["obss"][step,...] = obss[...]
+                done = torch.all(dones)
+                step += 1
+            trans_dict_h1["next_states"][i,...] = states[...]
+            trans_dict_h1["next_obss"][i,...] = obss[...]
+        return trans_dict_h1, trans_dict_h2, Rewards
