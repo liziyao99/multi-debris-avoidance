@@ -227,7 +227,7 @@ class edgesArray:
             g -= 1
         if trace and (g==-1 or node_traced):
             for pair in path:
-                self.traced_flags[*pair] = True
+                self.traced_flags[*pair] = True # python >= 3.11
         return tuple(path.__reversed__())
     
     def isLeaf(self, gen, idx, neglectTop=True, trace=False, traced=False) -> bool:
