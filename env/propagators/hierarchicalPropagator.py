@@ -574,10 +574,11 @@ class impulsePropagator(optCWPropagator):
                  impulse_bound:float=None) -> None:
         super().__init__(n_debris, h1_step, h2_step, dt, orbit_rad, max_dist, safe_dist, device)
         self.impulse_bound = impulse_bound
+        self.obs_dim = 6+7*n_debris
 
     def randomInitStates(self, num_states:int, seed=None) -> torch.Tensor:
         space_dim = 3
-        f1 = 10*space_dim
+        f1 = space_dim
         f2 = 1000*space_dim
         f3 = 10*space_dim
         max_time = 3600.
@@ -618,19 +619,23 @@ class impulsePropagator(optCWPropagator):
         states = self.statesEncode(states_dict)
         return states.to(self.device)
 
-    def getObss2(self, states: torch.Tensor, require_grad=False):
+    def getObss(self, states: torch.Tensor, require_grad=False):
         '''
-            forecast pos and vel data only.
+            primal and forecast data only.
         '''
         with torch.set_grad_enabled(require_grad):
             data = self.obssNormalize(states, require_grad=require_grad)
             # data = states
             decoded = self.statesDecode(data)
+            primal = decoded["primal"]
             forecast_pos = decoded["forecast_pos"]
             forecast_vel = decoded["forecast_vel"]
-            obss = torch.cat((forecast_pos.reshape(-1, 3*self.n_debris),
+            forecast_time = decoded["forecast_time"]
+            obss = torch.cat((primal.reshape(-1, 6), 
+                              forecast_time.reshape(-1, self.n_debris), 
+                              forecast_pos.reshape(-1, 3*self.n_debris),
                               forecast_vel.reshape(-1, 3*self.n_debris),
-                            ), dim=1)
+                              ), dim=1)
             return obss
             
     def getPlanRewards(self, states:torch.Tensor, targets:torch.Tensor, sigma=0.1, require_grad=True):

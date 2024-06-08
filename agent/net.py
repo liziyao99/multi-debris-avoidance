@@ -97,6 +97,31 @@ class boundedFcNet(fcNet):
         '''
         return self.obc.uniSample(size)
     
+class ballFcNet(boundedFcNet):
+    def __init__(self,
+                 n_feature:int,
+                 n_output:int,
+                 n_hiddens:typing.List[int],
+                 rad_bound:float
+                 ):
+        upper_bounds = [ torch.inf]*n_output + [rad_bound]
+        lower_bounds = [-torch.inf]*n_output + [0]
+        super().__init__(n_feature, n_output+1, n_hiddens, upper_bounds, lower_bounds)
+        self.dim = n_output
+
+    def post_process(self, x:torch.Tensor):
+        shape = list(x.shape)
+        shape[-1] = self.dim
+        x = x.reshape(-1, self.n_output)
+        x = self.obc(x)
+        vec = x[:,:-1]
+        rad = x[:,-1:]
+        norm = torch.linalg.norm(vec, dim=1, keepdim=True)
+        vec = vec/norm*rad
+        vec = vec.reshape(shape)
+        return vec
+
+    
 class boundedLSTM(boundedFcNet):
     def __init__(self, 
                  n_feature: int, 
