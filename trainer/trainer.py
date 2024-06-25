@@ -8,12 +8,12 @@ import data.dicts as D
 from data.buffer import replayBuffer
 from plotting.dataplot import dataPlot
 
-
 from rich.progress import Progress
 import typing
 import numpy as np
 import torch
 import torch.nn.functional as F
+import collections
 
 class dummyTrainer:
     def __init__(self, env:ENV.dummyEnv, agent:agent.rlAgent) -> None:
@@ -202,7 +202,7 @@ class planTrackTrainer:
         self.trackProp = trackProp
         self.agent = agent
 
-    def trainTracker(self, horizon:int, episode=100, batch_size=256, target_mode="random"):
+    def trainTracker(self, horizon:int, episode=100, batch_size=256, target_mode="random", noised=True):
         loss_list = []
         with Progress() as progress:
             task = progress.add_task("training tracker", total=episode)
@@ -217,10 +217,11 @@ class planTrackTrainer:
                 else:
                     raise(ValueError, "unknown target mode")
                 targets_seq = torch.tile(targets, (horizon,1,1)).detach()
-                main_noise = torch.randn_like(targets_seq[:,:,:self.agent.plan_dim]) * 0.1
-                sub_noise  = torch.randn_like(targets_seq[:,:,self.agent.plan_dim:]) * 0.01
-                noise = torch.cat([main_noise, sub_noise], dim=2)
-                targets_seq += noise # add noise
+                if noised:
+                    main_noise = torch.randn_like(targets_seq[:,:,:self.agent.plan_dim]) * 0.1
+                    sub_noise  = torch.randn_like(targets_seq[:,:,self.agent.plan_dim:]) * 0.01
+                    noise = torch.cat([main_noise, sub_noise], dim=2)
+                    targets_seq += noise # add noise
                 loss = self.trackProp.seqTrack(states, targets_seq, self.agent.tracker)
                 self.agent.tracker_opt.zero_grad()
                 loss.backward()
@@ -229,26 +230,37 @@ class planTrackTrainer:
                 progress.update(task, advance=1)
         return loss_list
     
-    def trainPlanner(self, episode=100, epoch=10, batch_size=256, explore_eps=0.5):
+    def trainPlanner(self, episode=100, epoch=10, batch_size=256, action_batch=64, explore_eps=0.5, 
+                     pertinence=True, pp_size:int=None):
         actor_loss_list = []
         critic_loss_list = []
         total_rewards = []
+        avoid_rates = []
+        pertinence_pos = collections.deque(maxlen=10000)
+        pp_size = self.mainProp.n_debris if pp_size is None else np.min(pp_size, self.mainProp.n_debris)
         with Progress() as progress:
             task = progress.add_task("training planner", total=episode)
             for i in range(epoch):
                 progress.tasks[task].description = "epoch {0} of {1}".format(i+1, epoch)
                 progress.tasks[task].completed = 0
                 for _ in range(episode):
-                    states = self.mainProp.randomInitStates(batch_size)
+                    if pertinence and pertinence_pos.__len__()>pp_size:
+                        pp_idx = np.random.choice(range(pertinence_pos.__len__()), size=pp_size, replace=False)
+                        pp = np.stack([pertinence_pos[i] for i in pp_idx], axis=1)
+                    else:
+                        pp = None
+                    states = self.mainProp.randomInitStates(batch_size, pertinence_pos=pp)
                     obss = self.mainProp.getObss(states)
                     obss_ = torch.from_numpy(obss).float().to(self.agent.device)
                     if torch.rand(1) < explore_eps:
                         targets_, planed_ = self.agent.random_track_target(batch_size)
                     else:
                         targets_, planed_ = self.agent.track_target(obss_)
+                        if pertinence:
+                            pertinence_pos.append(targets_[:,:3].detach().cpu().numpy())
                     targets = targets_.detach().cpu().numpy()
 
-                    rewards = self.mainProp.getPlanRewards(states, targets)
+                    rewards, ar = self.mainProp.getPlanRewards(states, targets)
                     rewards_ = torch.from_numpy(rewards).float().to(self.agent.device)
                     Qvalues_ = self.agent.critic(obss_, planed_)
                     rewards_ = rewards_.reshape(Qvalues_.shape)
@@ -258,7 +270,7 @@ class planTrackTrainer:
                     self.agent.critic_opt.step()
 
                     targets_, planed_ = self.agent.track_target(obss_)
-                    rewards = self.mainProp.getPlanRewards(states, targets_.detach().cpu().numpy())
+                    rewards, ar = self.mainProp.getPlanRewards(states, targets_.detach().cpu().numpy())
                     Qvalues_ = self.agent.critic(obss_, planed_)
                     actor_loss = -Qvalues_.mean()
                     self.agent.actor_opt.zero_grad()
@@ -268,10 +280,12 @@ class planTrackTrainer:
                     actor_loss_list.append(actor_loss.item())
                     critic_loss_list.append(critic_loss.item())
                     total_rewards.append(rewards.mean().item())
+                    avoid_rates.append(ar)
                     progress.update(task, advance=1)
-        return actor_loss_list, critic_loss_list, total_rewards
+        return actor_loss_list, critic_loss_list, total_rewards, avoid_rates
     
-    def trainUnity(self, horizon:int, episode=100, epoch=10, batch_size=256, explore_eps=0.5):
+    def trainUnity(self, horizon:int, episode=100, epoch=10, batch_size=256, explore_eps=0.5, update_tracker=False, 
+                   pertinence=True, pp_size:int=None):
         '''
             returns: `tracker_loss_list`, `planner_loss_list`, `critic_loss_list`, `total_rewards`
         '''
@@ -280,14 +294,21 @@ class planTrackTrainer:
         critic_loss_list = []
         total_rewards = []
         max_fuel_consume = self.agent.tracker.obc.max_norm*horizon
+        pertinence_pos = collections.deque(maxlen=10000)
+        pp_size = self.mainProp.n_debris if pp_size is None else np.min(pp_size, self.mainProp.n_debris)
         with Progress() as progress:
             task = progress.add_task("training unity", total=episode)
             for i in range(epoch):
                 progress.tasks[task].description = "epoch {0} of {1}".format(i+1, epoch)
                 progress.tasks[task].completed = 0
                 for _ in range(episode):
+                    if pertinence and pertinence_pos.__len__()>pp_size:
+                        pp_idx = np.random.choice(range(pertinence_pos.__len__()), size=pp_size, replace=False)
+                        pp = np.stack([pertinence_pos[i] for i in pp_idx], axis=1)
+                    else:
+                        pp = None
                     # plan
-                    states0 = self.mainProp.randomInitStates(batch_size)
+                    states0 = self.mainProp.randomInitStates(batch_size, pertinence_pos=pp)
                     obss0 = self.mainProp.getObss(states0)
                     obss0_ = torch.from_numpy(obss0).float().to(self.agent.device)
                     if torch.rand(1) < explore_eps: # explore
@@ -336,12 +357,13 @@ class planTrackTrainer:
                         trans_dict["dones"][t,...] = dones
 
                     # update tracker
-                    pstates_seq = torch.stack(pstates_seq, dim=0)
-                    targets_seq = torch.stack(targets_seq, dim=0)
-                    track_loss = self.agent.tracker.loss(pstates_seq, targets_seq)
-                    self.agent.tracker_opt.zero_grad()
-                    track_loss.backward()
-                    self.agent.tracker_opt.step()
+                    if update_tracker:
+                        pstates_seq = torch.stack(pstates_seq, dim=0)
+                        targets_seq = torch.stack(targets_seq, dim=0)
+                        track_loss = self.agent.tracker.loss(pstates_seq, targets_seq)
+                        self.agent.tracker_opt.zero_grad()
+                        track_loss.backward()
+                        self.agent.tracker_opt.step()
 
                     # update critic
                     fuel_consume = np.linalg.norm(trans_dict["actions"], axis=-1) # shape (horizon, batch_size)
@@ -365,35 +387,65 @@ class planTrackTrainer:
                     actor_loss.backward()
                     self.agent.actor_opt.step()
 
-                    tracker_loss_list.append(track_loss.item())
+                    if update_tracker:
+                        tracker_loss_list.append(track_loss.item())
                     planner_loss_list.append(actor_loss.item())
                     critic_loss_list.append(critic_loss.item())
                     total_rewards.append(np.mean(plan_rewards))
                     progress.update(task, advance=1)
         return tracker_loss_list, planner_loss_list, critic_loss_list, total_rewards
     
-    def test(self, horizon:int, target_mode="static"):
+    def test(self, horizon:int, target_mode="static", zero_pertinence=True, opt_step=1000, opt_lr=1e1):
         '''
             debug
         '''
-        if target_mode not in ("static", "moving", "mc"):
-            raise ValueError("target_mode must be one of (static, moving, mc)")
+        MODES = ("static", "moving", "mc", "zero", "static+")
+        if target_mode not in MODES:
+            raise ValueError(f"target_mode must be one of {MODES}")
         trans_dict = D.init_transDict(horizon, self.mainProp.state_dim, self.mainProp.obs_dim, self.mainProp.action_dim, 
                                       other_terms={"target_states":(self.trackProp.state_dim,)})
-        state = self.mainProp.randomInitStates(1)
+        if zero_pertinence:
+            state = self.mainProp.randomInitStates(1, pertinence_pos = np.zeros((1,1,3)))
+        else:
+            state = self.mainProp.randomInitStates(1)
         obs = self.mainProp.getObss(state)
         obs_0 = torch.from_numpy(obs).float().to(self.agent.device)
 
         if target_mode=="static":
             target_state_0, _ = self.agent.track_target(obs_0)
             target_obs_0 = self.trackProp.getObss(target_state_0)
+        elif target_mode=="static+":
+            _, plans = self.agent.track_target(obs_0)
+            plans = torch.tensor(plans, requires_grad=True)
+            plans_opt = torch.optim.Adam([plans], lr=opt_lr)
+            for _ in range(opt_step):
+                Qs = self.agent.critic(obs_0, plans)
+                loss = -Qs.mean()
+                plans_opt.zero_grad()
+                loss.backward()
+                plans_opt.step()
+            target_state_0 = torch.zeros((1,6)).to(self.agent.device)
+            target_state_0[:, :3] = plans
+            target_obs_0 = self.trackProp.getObss(target_state_0)
+        elif target_mode=="zero":
+            target_state_0 = torch.zeros((1, 6)).to(self.agent.device)
+            target_obs_0 = torch.zeros((1, 6)).to(self.agent.device)
         elif target_mode=="mc":
             n = 1000
-            target_states = self.trackProp.randomInitStates(n)
-            plans = target_states[:,:self.agent.plan_dim]
+            plans = self.agent.planner.uniSample(n) # shape (n, 3)
+            plans = torch.tensor(plans, requires_grad=True)
+            plans_opt = torch.optim.Adam([plans], lr=opt_lr)
             obss = torch.tile(obs_0, (n, 1))
+            for _ in range(opt_step):
+                Qs = self.agent.critic(obss, plans)
+                loss = -Qs.mean()
+                plans_opt.zero_grad()
+                loss.backward()
+                plans_opt.step()
             Qs = self.agent.critic(obss, plans)
-            target_state_0 = target_states[Qs.argmax()].unsqueeze(0)
+            best_pos = plans[Qs.argmax()]
+            target_state_0 = torch.zeros((1,self.agent.track_dim), device=self.agent.device)
+            target_state_0[0,:3] = best_pos
             target_obs_0 = self.trackProp.getObss(target_state_0)
         for i in range(horizon):
             trans_dict["states"][i,...] = state
@@ -405,7 +457,7 @@ class planTrackTrainer:
             primal_obs_ = self.trackProp.getObss(primal_state_)
 
             if is_approaching:
-                if target_mode in ("static", "mc"):
+                if target_mode in ("static", "mc", "zero", "static+"):
                     target_state_ = target_state_0
                     target_obs_ = target_obs_0
                 elif target_mode=="moving":
@@ -427,9 +479,11 @@ class planTrackTrainer:
                 break
         return trans_dict, min(i,horizon)
     
-def CWPTT(n_debris, device, load=""):
-    mainProp = propagator.CWPlanTrackPropagator(n_debris)
-    trackProp = propagatorT.CWPropagatorT(device=device)
+def CWPTT(n_debris, device, load="", max_dist=5000., safe_dist=500., 
+          actor_hiddens=[512]*8, 
+          critic_hiddens=[512]*8):
+    mainProp = propagator.CWPlanTrackPropagator(n_debris, max_dist=max_dist, safe_dist=safe_dist)
+    trackProp = propagatorT.CWPropagatorT(device=device, max_dist=max_dist)
     cub = torch.tensor([ 0.06]*3)
     clb = torch.tensor([-0.06]*3)
     pub = torch.tensor([ mainProp.max_dist]*3)
@@ -438,9 +492,9 @@ def CWPTT(n_debris, device, load=""):
                              plan_dim=3,
                              control_dim=mainProp.action_dim,
                              pad_dim=3,
-                             actor_hiddens=[512]*8,
+                             actor_hiddens=actor_hiddens,
                              tracker_hiddens=[512]*4,
-                             critic_hiddens=[512]*8,
+                             critic_hiddens=critic_hiddens,
                              control_upper_bounds=cub,
                              control_lower_bounds=clb,
                              plan_upper_bounds=pub,

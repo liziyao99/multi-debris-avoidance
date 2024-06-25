@@ -6,7 +6,7 @@ from typing import List
 
 class replayBuffer:
     def __init__(self,
-                 keys:List[str],
+                 keys:List[str]=None,
                  capacity=10000,
                  minimal_size=1000,
                  batch_size=128) -> None:
@@ -16,13 +16,21 @@ class replayBuffer:
         self.buffer = collections.deque(maxlen=capacity)
         self.minimal_size = minimal_size
         self.batch_size = batch_size
-        self._keys = keys
+        if keys is not None:
+            self._keys = keys
+            self.key_init = True
+        else:
+            self._keys = []
+            self.key_init = False
 
     def from_dict(self, trans_dict:dict, extend=True):
         datas = []
         if len(trans_dict.keys())==0:
             # empty dict passed when buffer is empty
             return []
+        elif not self.key_init:
+            self._keys = list(trans_dict.keys())
+            self.key_init = True
         for key in self._keys:
             datas.append(trans_dict[key])
         zipped = zip(*datas)

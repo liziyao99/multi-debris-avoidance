@@ -35,8 +35,6 @@ def lineProj(x, p, v):
     v_proj = dotEachRow(x-p, v_unit, keepdim=True)
     x_proj = p + v_proj * v_unit
     x_orth = x - x_proj
-    # print(x_orth)
-    # print("\n")
     return x_proj, x_orth
 
 def compute_advantage(gamma, lmd, td_delta:torch.Tensor):

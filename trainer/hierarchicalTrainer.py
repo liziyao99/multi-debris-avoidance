@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from rich.progress import Progress
 
-from env.propagators.hierarchicalPropagator import H2Propagator
+from env.propagators.hierarchicalPropagator import H2Propagator, H2PlanTrackPropagator
 from data.buffer import replayBuffer
 import data.dicts as D
 import agent.agent as A
@@ -152,22 +152,24 @@ class H2Trainer:
                     progress.update(task, advance=1)
         return data_list
     
-    def h2Pretrain(self, episode:int, horizon=None, states_num=256, h1=True):
+    def h2Pretrain(self, episode:int, horizon:int=None, states_num=256, h1=False, gamma=1.):
         Loss = []
+        Logs = []
         h1actor = self.hAgent[0].actor if h1 else None
         with Progress() as progress:
             task = progress.add_task("H2TreeTrainer pretraining:", total=episode)
             for _ in range(episode):
-                loss = self.prop.episodeTrack(self.hAgent[1].actor, h1actor, horizon=horizon, batch_size=states_num)
+                loss, logs = self.prop.episodeTrack(self.hAgent[1].actor, h1actor, horizon=horizon, batch_size=states_num, gamma=gamma)
                 self.hAgent[1].actor_opt.zero_grad()
                 loss.backward()
                 self.hAgent[1].actor_opt.step()
                 Loss.append(loss.item())
                 progress.update(task, advance=1)
-        return Loss
+                Logs.append(logs)
+        return Loss, Logs
     
     def offPolicySim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1, 
-                     off_policy_train=True,
+                     off_policy_train=False,
                      prop_with_grad=False):
         if states0 is None:
             states0 = self.prop.randomInitStates(states_num)
@@ -223,7 +225,7 @@ class H2Trainer:
                 progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
                 progress.tasks[task].completed = 0
                 for _ in range(n_episode):
-                    trans_dict, h2_loss = self.offPolicySim(states_num=states_num, h1_explore_eps=h1_explore_eps, prop_with_grad=prop_with_grad)
+                    trans_dict, h2_loss = self.offPolicySim(states_num=states_num, h1_explore_eps=h1_explore_eps, off_policy_train=True, prop_with_grad=prop_with_grad)
                     tds = D.deBatch_dict(trans_dict)
                     for d in tds:
                         Loss = self.hAgent[0].update(d)
@@ -298,3 +300,75 @@ class thrustCWTrainer(H2Trainer):
         actions_penalty = torch.sum(actions_penalty, dim=0)
         h2rewards = h2rewards + actions_penalty
         return trans_dict, next_states, h2rewards, h1actions, h1rewards, done_flags, terminal_rewards
+
+
+class H2PlanTrackTrainer(H2Trainer):
+    def __init__(self, prop: H2Propagator, hAgent: HA.hierarchicalAgent, buffer: replayBuffer = None, loss_keys: typing.List[str] = []) -> None:
+        super().__init__(prop, hAgent, buffer, loss_keys)
+    
+    def h2Sim(self, 
+              states0:torch.Tensor, 
+              h1actions:torch.Tensor=None, 
+              h1noise=True, 
+              prop_with_grad=True):
+        '''
+            returns: `h2transdict`, `next_states`, `h2rewards`(with grad if `prop_with_grad`), `h1actions`, `h1rewards`, `dones`, `terminal_rewards`.
+        '''
+        batch_size = states0.shape[0]
+        trans_dict = D.init_transDictBatch(self.prop.h2_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h2_action_dim,
+                                           struct="torch", device=self.device)
+        step = 0
+        done = False
+        done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        obss = self.prop.getObss(states0, require_grad=True)
+        
+        if h1actions is None:
+            _, h1actions = self.hAgent[0].act(obss)
+        if h1noise:
+            noise = self.hAgent[0].actor.uniSample(batch_size)/10
+            h1actions = h1actions + noise
+        h1actions = self.hAgent[0].actor.clip(h1actions)
+        # targets = (h1actions+states0[:,:self.prop.h1_action_dim]).detach() # increment control
+        targets = h1actions.detach()
+
+        states = states0.clone()
+        next_states = states0.clone()
+        h1rewards = torch.zeros(batch_size, device=self.device)
+        h2rewards = torch.zeros(batch_size, device=self.device, requires_grad=prop_with_grad)
+        terminal_rewards = torch.zeros(batch_size, device=self.device)
+        actions_penalty = []
+        while not done and step<self.prop.h2_step:
+            trans_dict["states"][step,...] = states[...].detach()
+            trans_dict["obss"][step,...] = obss[...].detach()
+            _, actions = self.hAgent.act(obss, h=1, higher_action=h1actions)
+            actions_penalty.append(-torch.norm(actions, dim=-1))
+            states, obss, h1rs, h2rs, dones, trs = self.prop.propagate(states, targets, actions, require_grad=prop_with_grad)
+            terminal_rewards = torch.where(done_flags, terminal_rewards, trs)
+            next_states = torch.where(done_flags.unsqueeze(1), next_states, states)
+            done_flags = done_flags | dones
+            trans_dict["actions"][step,...] = actions[...].detach()
+            trans_dict["next_states"][step,...] = states[...].detach()
+            trans_dict["next_obss"][step,...] = obss[...].detach()
+            trans_dict["rewards"][step,...] = h2rs[...].detach()
+            trans_dict["dones"][step,...] = dones[...].detach()
+            h1rewards = h1rewards + h1rs*(~done_flags)
+            h2rewards = h2rs
+            done = torch.all(dones)
+            step += 1
+        actions_penalty = torch.stack(actions_penalty, dim=0)
+        actions_penalty = torch.sum(actions_penalty, dim=0)
+        h2rewards = h2rewards + actions_penalty
+        return trans_dict, next_states, h2rewards, h1actions, h1rewards, done_flags, terminal_rewards
+    
+
+class H2PlanTrackTrainerV2(H2PlanTrackTrainer):
+    def __init__(self, propArgs:dict, hAgentArgs:dict, bufferArgs:dict=None, device=None, loss_keys:typing.List[str]=[]) -> None:
+        propArgs |= {"device":device}
+        prop = H2PlanTrackPropagator(**propArgs)
+        hAgentArgs |= {"device":device, 
+                       "obs_dim":prop.obs_dim, 
+                       # "action_dim":prop.h2_action_dim
+                       }
+        hAgent = HA.trackCW_SAC(**hAgentArgs)
+        buffer = replayBuffer(**bufferArgs) if bufferArgs is not None else None
+        super().__init__(prop, hAgent, buffer, loss_keys)

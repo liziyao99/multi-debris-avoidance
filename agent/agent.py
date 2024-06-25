@@ -87,6 +87,10 @@ class rlAgent:
         self.actor.share_memory()
         self.critic.share_memory()
 
+    def copy(self, other):
+        for i in range(len(self.modules)):
+            self.modules[i].load_state_dict(other.modules[i].state_dict())
+
 class boundedRlAgent(rlAgent):
     def __init__(self,
                  obs_dim:int = 6,

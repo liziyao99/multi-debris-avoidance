@@ -34,9 +34,10 @@ def criticGrid2D(agent:rlAgent, dims=(0,1), span=(-2,2), step=21, singles=0.):
 
 def criticContour(agent:rlAgent, dims=(0,1), span=(-2,2), step=21, singles=0.):
     XY, Z = criticGrid2D(agent, dims=dims, span=span, step=step, singles=singles)
-    plt.contourf(XY[0], XY[1], Z)
+    contour = plt.contourf(XY[0], XY[1], Z)
     plt.colorbar()
     plt.show()
+    return contour
 
 def historyFile(trans_dict:dict, agent:rlAgent=None, stage=-1, n_debris=0, 
                 items:typing.Tuple[str]=(), 

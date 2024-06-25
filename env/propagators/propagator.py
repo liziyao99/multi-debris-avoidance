@@ -430,23 +430,78 @@ class CWPlanTrackPropagator(CWDebrisPropagator):
         super().__init__(n_debris, dt, orbit_rad, max_dist, safe_dist)
         self.obs_dim = 6+self.n_debris*7 # primal state and forecast data, no debris' state
 
+    def randomInitStates(self, num_states:int, 
+                         pertinence_pos:np.ndarray=None, 
+                         pertinence_states:np.ndarray=None) -> np.ndarray:
+        space_dim = 3
+        f1 = 1.
+        f2 = 1000*space_dim
+        f3 = 10*space_dim
+        max_time = 3600.
+
+        primal_pos = np.zeros((num_states, 1, space_dim))
+        primal_vel = np.zeros((num_states, 1, space_dim))
+        # primal_pos = np.random.uniform(low=-self.max_dist/f1, high=self.max_dist/f1, size=(num_states, 1, space_dim))
+        # primal_vel = np.random.uniform(low=-self.max_dist/f2, high=self.max_dist/f2, size=(num_states, 1, space_dim))
+        forecast_pos = np.random.uniform(low=-self.max_dist/f1, high=self.max_dist/f1, size=(num_states, self.n_debris, space_dim))
+        forecast_vel = np.random.uniform(low=-self.max_dist/f3, high=self.max_dist/f3, size=(num_states, self.n_debris, space_dim))
+        forecast_time = np.random.uniform(low=max_time/3, high=2*max_time/3, size=(num_states, self.n_debris, 1))
+
+        if pertinence_states is not None:
+            indices = np.random.choice(self.n_debris, size=pertinence_states.shape[1], replace=False)
+            forecast_pos[:,indices] = pertinence_states[:,:,:3]
+            forecast_vel[:,indices] = pertinence_states[:,:,3:]
+
+        elif pertinence_pos is not None:
+            indices = np.random.choice(self.n_debris, size=pertinence_pos.shape[1], replace=False)
+            forecast_pos[:,indices] = pertinence_pos
+
+        primal_states = np.concatenate((primal_pos, primal_vel), axis=2)
+        forecast_states = np.concatenate((forecast_pos, forecast_vel), axis=2)
+        debris_states = cwutils.CW_tInv_batch(a = np.array([self.orbit_rad]*(num_states*self.n_debris)), 
+                                                       forecast_states = forecast_states.reshape((num_states*self.n_debris,space_dim*2)), 
+                                                       t2c = forecast_time.flatten())
+        debris_states = debris_states.reshape((num_states, self.n_debris, space_dim*2))
+        states_dict = {
+            "primal": primal_states,
+            "debris": debris_states,
+            "forecast_time": forecast_time,
+            "forecast_pos": forecast_pos,
+            "forecast_vel": forecast_vel
+        }
+        states = self.statesEncode(states_dict)
+        return states
+
     def getPlanRewards(self, states:np.ndarray, target:np.ndarray):
         batch_size = states.shape[0]
         target = target.reshape((batch_size,1,-1))
         target_pos = target[:, :, :3]
         decoded = self.statesDecode(states)
         primal_pos = decoded["primal"][:,:,:3]
+        forecast_pos = decoded["forecast_pos"]
+        forecast_vel = decoded["forecast_vel"]
+        delta_pos = target_pos-forecast_pos
 
-        forecast_states = np.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),axis=-1)
+        forecast_states = np.concatenate((forecast_pos, forecast_vel),axis=-1)
         forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
         n_acc = forecast_acc/np.linalg.norm(forecast_acc, axis=-1, keepdims=True)
-        n_vel = decoded["forecast_vel"]/np.linalg.norm(decoded["forecast_vel"], axis=-1, keepdims=True)
+        n_vel = forecast_vel/np.linalg.norm(forecast_vel, axis=-1, keepdims=True)
         normal_vec = np.cross(n_vel, n_acc, axis=-1)
         normal_vec = normal_vec/np.linalg.norm(normal_vec, axis=-1, keepdims=True)
 
-        dot_lateral = np.sum((target_pos-decoded["forecast_pos"])*(-n_acc), axis=-1) # negative dot product of relative position and debris' acceleration
-        dist_lateral = dot_lateral-self.safe_dist
-        dot_vertical = np.sum((target_pos-decoded["forecast_pos"])*normal_vec, axis=-1) # dot product of relative position and normal vector of debris' plane
+        pos_vertical, pos_lateral = lineProj(delta_pos, forecast_pos, normal_vec)
+        l0, l1 = lineProj(pos_lateral, np.zeros_like(forecast_pos), forecast_vel)
+        # suppose acc and vel are vertical
+        t = l0/forecast_vel # TODO: acc
+        offset1 = t**2*forecast_acc/2
+        dist_lateral = np.linalg.norm(l1-offset1, axis=-1)-self.safe_dist
+
+        # dot_lateral = np.sum(delta_pos*(-n_acc), axis=-1) # negative dot product of relative position and debris' acceleration
+        # dist_lateral_ex =  dot_lateral-self.safe_dist
+        # dist_lateral_in = -dot_lateral-2*self.safe_dist
+        # dist_lateral = np.maximum(dist_lateral_ex, dist_lateral_in)
+
+        dot_vertical = np.sum(delta_pos*normal_vec, axis=-1) # dot product of relative position and normal vector of debris' plane
         dist_vertical = np.abs(dot_vertical)-self.safe_dist
         d2d = np.maximum(dist_lateral, dist_vertical) # distance to each debris' forecast
         d2d = np.min(d2d, axis=1) # min distance to each debris' forecast
@@ -454,10 +509,12 @@ class CWPlanTrackPropagator(CWDebrisPropagator):
         nd2t = np.linalg.norm((target_pos-primal_pos), axis=-1)/self.max_dist # normalized distance from primal pos to target
         nd2o = np.linalg.norm(target_pos, axis=-1)/self.max_dist # normalized distance from target to origin
 
-        rewards_avoid = -(nd2t+nd2o)/2
+        # rewards_avoid = -(nd2t+nd2o)/2
+        rewards_avoid = -nd2o
         rewards_avoid = rewards_avoid.squeeze()
-        rewards = np.where(d2d>0, rewards_avoid, -1)
-        return rewards
+        rewards = np.where(d2d>0, rewards_avoid, -2)
+        avoid_rate = (d2d>0).sum()/batch_size
+        return rewards, avoid_rate
         
     def getObss(self, states:np.ndarray) -> np.ndarray:
         batch_size = states.shape[0]

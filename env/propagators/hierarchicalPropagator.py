@@ -100,12 +100,16 @@ class H2CWDePropagator0(H2Propagator):
 
     def _init_ons(self) -> torch.Tensor:
         obss_normalize_scale = torch.ones((1,self.obs_dim)).float().to(self.device)
+        r_factor = self.max_dist
+        v_factor = self.max_dist/100.
         decoded = self.statesDecode(obss_normalize_scale)
-        decoded["primal"][...] = self.max_dist
-        decoded["debris"][...] = self.max_dist
-        decoded["forecast_pos"][...] = self.max_dist
-        decoded["forecast_vel"][...] = self.max_dist
-        decoded["forecast_time"][...] = self.h1_step*self.h2_step
+        decoded["primal"][:,:,:3] = r_factor
+        decoded["primal"][:,:,3:] = v_factor
+        decoded["debris"][:,:,:3] = r_factor
+        decoded["debris"][:,:,3:] = v_factor
+        decoded["forecast_pos"][...] = r_factor
+        decoded["forecast_vel"][...] = v_factor
+        decoded["forecast_time"][...] = self.dt*self.h1_step*self.h2_step
         decoded["h1_step"][...] = self.h1_step
         decoded["h2_step"][...] = self.h2_step
         obss_normalize_scale = self.statesEncode(decoded)
@@ -287,6 +291,9 @@ class H2CWDePropagator0(H2Propagator):
             return d2o, d2d
         
 class H2CWDePropagator(H2CWDePropagator0):
+    '''
+        No truncating and terminal rewards.
+    '''
     def __init__(self, n_debris, h1_step=60, h2_step=60, dt=1, orbit_rad=7000000, max_dist=5000, safe_dist=500, device="cpu") -> None:
         super().__init__(n_debris, h1_step, h2_step, dt, orbit_rad, max_dist, safe_dist, device)
     
@@ -896,3 +903,155 @@ class impulsePropagator(optCWPropagator):
             trans_dict_h1["next_states"][i,...] = states[...]
             trans_dict_h1["next_obss"][i,...] = obss[...]
         return trans_dict_h1, trans_dict_h2, Rewards
+
+
+class H2PlanTrackPropagator(thrustCWPropagator):
+    def __init__(self, n_debris, h1_step=6, h2_step=600, dt=1, orbit_rad=7000000, max_dist=5000, safe_dist=500, device="cpu") -> None:
+        super().__init__(n_debris, h1_step, h2_step, dt, orbit_rad, max_dist, safe_dist, device)
+        self.h1_action_dim = 3 # target pos
+    
+    def getPlanRewards(self, states: torch.Tensor, h1_actions:torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:
+        with torch.set_grad_enabled(require_grad):
+            batch_size = states.shape[0]
+            target = h1_actions
+            target = target.reshape((batch_size,1,self.h1_action_dim))
+            target_pos = target[:, :, :3]
+            decoded = self.statesDecode(states)
+            primal_pos = decoded["primal"][:,:,:3]
+
+            forecast_time = decoded["forecast_time"].squeeze(-1)
+            forecast_states = torch.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),dim=-1)
+            forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
+            n_acc = forecast_acc/torch.norm(forecast_acc, dim=-1, keepdim=True)
+            n_vel = decoded["forecast_vel"]/torch.norm(decoded["forecast_vel"], dim=-1, keepdim=True)
+            normal_vec = torch.cross(n_vel, n_acc, dim=-1)
+            normal_vec = normal_vec/torch.norm(normal_vec, dim=-1, keepdim=True)
+
+            dot_lateral = torch.sum((target_pos-decoded["forecast_pos"])*(-n_acc), axis=-1) # negative dot product of relative position and debris' acceleration
+            dist_lateral = dot_lateral-self.safe_dist
+            dot_vertical = torch.sum((target_pos-decoded["forecast_pos"])*normal_vec, axis=-1) # dot product of relative position and normal vector of debris' plane
+            dist_vertical = torch.abs(dot_vertical)-self.safe_dist
+            d2d = torch.max(dist_lateral, dist_vertical) # distance to each debris' forecast
+            d2d = torch.where(forecast_time>-10, d2d, 1e6)
+            d2d = torch.min(d2d, dim=1)[0] # min distance to each debris' forecast
+
+            nd2t = torch.norm((target_pos-primal_pos), dim=-1)/self.max_dist # normalized distance from primal pos to target
+            nd2o = torch.norm(target_pos, dim=-1)/self.max_dist # normalized distance from target to origin
+
+            rewards = torch.where(d2d>0, -(nd2t+nd2o)/2, -1)
+            avoid_rate = (d2d>0).sum()/batch_size
+            return rewards.detach(), avoid_rate.item()
+
+    def getH2Rewards(self, states: torch.Tensor, h1_actions: torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:
+        '''
+            dummy reward. TODO: track loss.
+        '''
+        with torch.set_grad_enabled(require_grad):
+            return torch.zeros(states.shape[0], device=self.device)
+        
+    def episodeTrack(self, 
+                     tracker, 
+                     planner=None, 
+                     init_states:torch.Tensor=None, 
+                     targets:torch.Tensor=None, 
+                     horizon:int=None, 
+                     batch_size=256,
+                     gamma=1.,
+                     ) -> torch.Tensor:
+        '''
+            args:
+                `tracker`: see `trackNet`.
+                `init_states`: shape (batch_size, 6)
+                `targets`: shape (batch_size, 3)
+                `horizon`: step to reach `targets`.
+        '''
+        init_states = self.randomInitStates(batch_size) if init_states is None else init_states
+        init_obss = self.getObss(init_states)
+        horizon = self.h2_step if horizon is None else horizon
+        err_thrus = 10.
+        states = init_states
+        obss = self.getObss(states, require_grad=True)
+        if planner is not None:
+            raise NotImplementedError
+        else:
+            delta_pos = torch.randn((batch_size, self.h1_action_dim), device=self.device)/3
+            targets = init_obss[:,:self.h1_action_dim] + delta_pos
+        targets = targets.detach()
+        targets_states = targets * self.max_dist
+        err_loss = torch.zeros(batch_size, device=self.device, requires_grad=True)
+        # vel_loss = torch.zeros(batch_size, device=self.device, requires_grad=True)
+        actions_seq = []
+        primal_states_seq = []
+        primal_obss_seq = []
+        for i in range(horizon):
+            primal_obss = obss[:,:6]
+            primal_obss = primal_obss.detach()
+            tracker_input = torch.hstack((primal_obss, targets))
+            actions = tracker(tracker_input)
+            states, obss, _, _, dones, _ = self.propagate(states, targets_states, actions, require_grad=True)
+            actions_seq.append(actions)
+            primal_states_seq.append(states[:,:6])
+            primal_obss_seq.append(obss[:, :6])
+            err_loss = err_loss*gamma
+            err_loss = err_loss+torch.norm(obss[:,:self.h1_action_dim]-targets, dim=1)
+            # vel_loss = vel_loss*gamma
+            # vel_loss = vel_loss+torch.norm(obss[:,3:6], dim=1)
+        primal_states_seq = torch.stack(primal_states_seq)
+        primal_obss_seq = torch.stack(primal_obss_seq)
+        actions_seq = torch.stack(actions_seq)
+        actions_increment_seq = actions_seq[1:] - actions_seq[:-1]
+        actions_loss = torch.sum(torch.norm(actions_seq, dim=-1), dim=0)
+        actions_increment_loss = torch.sum(torch.norm(actions_increment_seq, dim=-1), dim=0)
+
+        obss_increment_seq = primal_obss_seq[1:,:,:self.h1_action_dim] - primal_obss_seq[:-1,:,:self.h1_action_dim]
+        obss_delta_seq = targets.unsqueeze(0) - primal_obss_seq[:,:,:self.h1_action_dim]
+        overshoot_loss = -torch.sum(torch.norm(obss_increment_seq*obss_delta_seq[:-1], dim=-1), dim=0)
+
+        # targets_seq = torch.zeros_like(primal_states_seq)
+        # targets_seq[:,:,:self.h1_action_dim] = targets.unsqueeze(0) # * self.max_dist
+        # primal_state_loss = torch.sum(torch.norm(primal_states_seq-targets_seq, dim=-1), dim=0)
+        # primal_state_loss = torch.sum(torch.norm(primal_obss_seq-targets_seq, dim=-1), dim=0)
+        # loss = primal_state_loss
+
+        # total_loss = err_loss + actions_loss
+        total_loss = err_loss + actions_loss + actions_increment_loss + overshoot_loss
+        loss = total_loss
+        loss = loss.mean()
+        return loss, (err_loss.mean().item(), actions_loss.mean().item(), actions_increment_loss.mean().item(), overshoot_loss.mean().item())
+    
+    def seqTrack(self, 
+                 tracker, 
+                 init_states:torch.Tensor=None, 
+                 targets:torch.Tensor=None, 
+                 horizon:int=None, 
+                 batch_size=256,) -> torch.Tensor:
+            '''
+                args:
+                    `init_states`: shape (batch_size,state_dim)
+                    `targets_seq`: shape (horizon,batch_size,state_dim)
+                    `tracker`: see `trackNet2`.
+            '''
+            init_states = self.randomInitStates(batch_size) if init_states is None else init_states
+            horizon = self.h2_step if horizon is None else horizon
+            states = init_states
+            delta_pos = 1000*torch.randn((batch_size, self.h1_action_dim), device=self.device)
+            targets = init_states[:,:self.h1_action_dim] + delta_pos
+            targets = targets.detach()
+            primal_states_seq = []
+            targets_seq = []
+            for i in range(horizon):
+                primal_states = states[:, :6]
+                primal_states_seq.append(primal_states)
+                targets_seq.append(targets)
+                tracker_input = torch.hstack((primal_states, targets)).detach() # TODO: obs
+                actions = tracker(tracker_input)
+                states = self.getNextStates(states, actions, require_grad=True)
+            primal_states_seq = torch.stack(primal_states_seq)
+            targets_seq = torch.stack(targets_seq)
+            loss = tracker.loss(primal_states_seq, targets_seq)
+            return loss
+    
+    def obssNormalize(self, obss:torch.Tensor, require_grad=False) -> torch.Tensor:
+        with torch.set_grad_enabled(require_grad):
+            obss = obss/self.obss_normalize_scale
+            return obss

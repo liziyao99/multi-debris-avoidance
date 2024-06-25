@@ -37,7 +37,7 @@ class hierarchicalAgent:
             agent = self.agents[i]
             _, actions = agent.act(self.oa_preprocess(obss, actions_chain[-1], i))
             actions_chain.append(actions)
-        return actions_chain
+        return actions_chain[1:]
 
     def obs_preprocess(self, obss:torch.Tensor):
         '''
@@ -62,6 +62,10 @@ class hierarchicalAgent:
         for i in range(self.nH):
             path = os.path.join(folder, f"h{i}.ptd")
             self.agents[i].load(path)
+
+    def copy(self, other):
+        for i in range(self.nH):
+            self.agents[i].copy(other.agents[i])
     
 
 class CWH2_DDPG(hierarchicalAgent):
@@ -248,3 +252,64 @@ class thrustCW_SAC(hierarchicalAgent):
         else:
             primals = obss[:,:self.h2obs_dim]
             return torch.hstack((primals, primals+actions))
+        
+
+class trackCW_SAC(hierarchicalAgent):
+    def __init__(self,
+                 obs_dim: int,
+                 action_bounds:typing.List[float],
+                 sigma_upper_bounds:typing.List[float],
+                 h1a_hiddens: typing.List[int] = [128] * 5,
+                 h1c_hiddens: typing.List[int] = [128] * 5,
+                 h2a_hiddens: typing.List[int] = [128] * 5,
+                 h2out_ub:torch.Tensor=None,
+                 h2out_lb:torch.Tensor=None,
+                 h1a_lr=1e-5,
+                 h2a_lr=1e-4,
+                 h1c_lr=1e-4,
+                 gamma=0.95,
+                 tau=0.005,
+                 device=None
+                ) -> None:
+        self.h1obs_dim = obs_dim
+        self.h1out_dim = 3 # target pos
+        self.h2obs_dim = 6 # primal states, TODO: and time
+        self.h2out_dim = 3 # thrust
+
+        h1agent = A.SAC(self.h1obs_dim,
+                        self.h1out_dim,
+                        action_bounds=action_bounds,
+                        sigma_upper_bounds=sigma_upper_bounds,
+                        gamma=gamma,
+                        tau=tau,
+                        actor_hiddens=h1a_hiddens,
+                        critic_hiddens=h1c_hiddens,
+                        actor_lr=h1a_lr,
+                        critic_lr=h1c_lr,
+                        device=device)
+        
+        h2agent = A.boundedRlAgent(self.h2obs_dim+self.h1out_dim, 
+                                   self.h2out_dim, 
+                                   actor_hiddens=h2a_hiddens, 
+                                   critic_hiddens=[128], # dummy
+                                   action_upper_bounds=h2out_ub,
+                                   action_lower_bounds=h2out_lb,
+                                   actor_lr=h2a_lr,
+                                   device=device
+                                   )
+        
+        agents = [h1agent, h2agent]
+        super().__init__(agents)
+
+    def obs_preprocess(self, obss:torch.Tensor):
+        '''
+            return processed obsercations for each hierarchy.
+        '''
+        return [obss, obss[:,:self.h2obs_dim]]
+    
+    def oa_preprocess(self, obss, actions, h:int):
+        if h==0:
+            return obss
+        else:
+            primals = obss[:,:self.h2obs_dim]
+            return torch.hstack((primals, actions))

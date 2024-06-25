@@ -516,7 +516,8 @@ class CWPlanTrackPropagatorT(CWDebrisPropagatorT):
         nd2o = torch.norm(target_pos, dim=-1)/self.max_dist # normalized distance from target to origin
 
         rewards = torch.where(d2d.values>0, -(nd2t+nd2o)/2, -1)
-        return rewards.detach()
+        avoid_rate = (d2d>0).sum()/batch_size
+        return rewards.detach(), avoid_rate.item()
         
     def getObss(self, states:torch.Tensor) -> torch.Tensor:
         batch_size = states.shape[0]
