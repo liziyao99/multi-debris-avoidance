@@ -8,6 +8,7 @@ from data.buffer import replayBuffer
 import data.dicts as D
 import agent.agent as A
 import agent.hierarchicalAgent as HA
+from plotting.dataplot import dataPlot
 
 class H2Trainer:
     def __init__(self, 
@@ -38,7 +39,7 @@ class H2Trainer:
         step = 0
         done = False
         done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-        obss = self.prop.getObss(states0, require_grad=True)
+        obss = self.prop.getObss(states0, require_grad=prop_with_grad)
         
         if h1actions is None:
             _, h1actions = self.hAgent[0].act(obss)
@@ -219,6 +220,7 @@ class H2Trainer:
     def offPolicyTrain(self, n_epoch:int, n_episode:int, states_num=1, h1_explore_eps=0.4, prop_with_grad=False):
         keys = ["total_rewards", "h2_loss"] + self.loss_keys
         log_dict = dict(zip( keys, [[] for _ in range(len(keys))] ))
+        plot = dataPlot(keys)
         with Progress() as progress:
             task = progress.add_task("epoch{0}".format(0), total=n_episode)
             for i in range(n_epoch):
@@ -240,6 +242,9 @@ class H2Trainer:
                         elif isinstance(Loss, dict):
                             log_dict[self.loss_keys[i]].append(Loss[self.loss_keys[i]])
                     progress.update(task, advance=1)
+                self.hAgent.save("../model/checkpoint")
+                plot.set_data(list(log_dict.values()))
+                plot.save_fig("../model/log.png")
         return log_dict
     
 class thrustCWTrainer(H2Trainer):
