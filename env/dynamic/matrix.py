@@ -81,7 +81,7 @@ def CW_TransMat(t0:float,
         )).astype(np.float32)
     return Phi
 
-def CW_transMat_batch(t0:np.ndarray,
+def CW_TransMat_batch(t0:np.ndarray,
                       t1:np.ndarray,
                       a:np.ndarray,
                       mu:np.ndarray=None):

@@ -5,6 +5,7 @@ import typing
 import numpy as np
 import torch
 import torch.nn.functional as F
+import agent.utils as autils
 
 class rlAgent:
     def __init__(self,
@@ -810,3 +811,159 @@ class DDPG(boundedRlAgent):
         self.critic_opt.load_state_dict(dicts["critic_opt"])
         self.target_actor.load_state_dict(dicts["target_actor"])
         self.target_critic.load_state_dict(dicts["target_critic"])
+
+
+class lstmDDPG(DDPG):
+    def __init__(self,
+                 main_obs_dim: int,
+                 sub_obs_dim: int,
+                 sub_feature_dim: int,
+                 lstm_num_layers: int,
+                 action_dim: int,
+                 gamma = 0.99,
+                 sigma = 0.1,
+                 tau = 0.005,
+                 actor_hiddens: typing.List[int] = [128] * 5,
+                 critic_hiddens: typing.List[int] = [128] * 5,
+                 action_upper_bounds=None,
+                 action_lower_bounds=None,
+                 actor_lr=0.00001,
+                 critic_lr=0.0001,
+                 partial_dim = None,
+                 partial_hiddens = [128],
+                 partial_lr=0.0001,
+                 device=None) -> None:
+        self.main_obs_dim = main_obs_dim
+        self.sub_obs_dim = sub_obs_dim
+        '''
+            input size of lstm
+        '''
+        self.sub_feature_dim = sub_feature_dim
+        '''
+            hidden size of lstm
+        '''
+        self.fc_in_dim = main_obs_dim+sub_feature_dim
+        super().__init__(self.fc_in_dim, action_dim, gamma, sigma, tau, actor_hiddens, critic_hiddens, action_upper_bounds, action_lower_bounds, actor_lr, critic_lr, device)
+        self.lstm = nn.LSTM(input_size=self.sub_obs_dim, hidden_size=self.sub_feature_dim, num_layers=lstm_num_layers, batch_first=True).to(device)
+        self.modules.append(self.lstm)
+
+        self.actor_opt = torch.optim.Adam(list(self.actor.parameters())+list(self.lstm.parameters()), lr=actor_lr)
+        self.critic_opt = torch.optim.Adam(list(self.critic.parameters())+list(self.lstm.parameters()), lr=critic_lr)
+
+        self.partial_dim = partial_dim
+        if partial_dim is not None:
+            self.partial_fc = fcNet(self.fc_in_dim, partial_dim, partial_hiddens).to(device)
+            self.modules.append(self.partial_fc)
+            self.partial_opt = torch.optim.Adam(list(self.lstm.parameters())+list(self.partial_fc.parameters()), lr=partial_lr)
+        else:
+            self.partial_fc = None
+            self.partial_opt = None
+
+    def get_fc_input(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor]):
+        '''
+            `main_obs`: shape (batch_size, main_obs_dim)
+            `sub_seq`: shape (batch_size, seq_len, sub_obs_dim)
+        '''
+        if isinstance(sub_seq, torch.Tensor): 
+            sub_feature = self.lstm(sub_seq.to(self.device))[0][:,-1] # shape: (batch_size, sub_feature_dim)
+        elif isinstance(sub_seq, typing.Iterable):
+            batch_size = len(sub_seq)
+            sub_feature = torch.zeros((batch_size, self.sub_feature_dim), device=self.device)
+            stacked, indeces = autils.var_len_seq_sort(sub_seq)
+            for i in range(len(stacked)):
+                sub_feature[indeces[i]] = self.lstm(stacked[i].to(self.device))[0][:,-1]
+        if self.main_obs_dim==0:
+            fc_in = sub_feature
+        else:
+            fc_in = torch.cat([main_obs.to(self.device), sub_feature], dim=-1)
+        return fc_in
+    
+    def partial_output(self, main_obs:torch.Tensor, sub_seq:torch.Tensor):
+        if self.partial_fc is None:
+            raise RuntimeError("no `partial_fc`")
+        else:
+            fc_in = self.get_fc_input(main_obs, sub_seq)
+            return self.partial_fc(fc_in)
+    
+    def act(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], target=False):
+        '''
+            returns:
+                `output`: output of actor.
+                `sample`: sampled of `output` if actor is random, else `output`.
+        '''
+        actor = self.target_actor if target else self.actor
+        obs = self.get_fc_input(main_obs, sub_seq)
+        output = actor(obs)
+        noise = torch.randn_like(output)*self.sigma
+        sample = output + noise
+        sample = actor.clip(sample)
+        return output, sample
+
+    
+    def _critic(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], actions:torch.Tensor, target=False):
+        critic = self.target_critic if target else self.critic
+        obs = self.get_fc_input(main_obs, sub_seq)
+        q_values = critic(obs, actions)
+        return q_values
+    
+    def update(self, trans_dict):
+        rewards = torch.stack(trans_dict["rewards"]).reshape((-1, 1)).to(self.device)
+        dones = torch.stack(trans_dict["dones"]).reshape((-1, 1)).to(self.device)
+        main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
+        next_main_obss = torch.stack(trans_dict["next_primal_obss"]).to(self.device)
+        sub_obss = trans_dict["debris_obss"]
+        next_sub_obss = trans_dict["next_debris_obss"]
+        actions = torch.stack(trans_dict["actions"]).to(self.device)
+
+        _, next_actions = self.act(next_main_obss, next_sub_obss, target=True)
+        next_q_values = self._critic(next_main_obss, next_sub_obss, next_actions.detach(), target=True)
+        q_targets = rewards + self.gamma*next_q_values*(~dones)
+        critic_loss = torch.mean(F.mse_loss(self._critic(main_obss, sub_obss, actions), q_targets.detach()))
+        self.critic_opt.zero_grad()
+        critic_loss.backward()
+        self.critic_opt.step()
+        critic_loss = critic_loss.item()
+
+        curr_actions, _ = self.act(main_obss, sub_obss)
+        actor_loss = -torch.mean(self._critic(main_obss, sub_obss, curr_actions))
+        self.actor_opt.zero_grad()
+        actor_loss.backward()
+        self.actor_opt.step()
+        actor_loss = actor_loss.item()
+
+        self.soft_update(self.actor, self.target_actor)
+        self.soft_update(self.critic, self.target_critic)
+
+        if "partial_label" in trans_dict.keys():
+            partial_out = self.partial_output(main_obss, sub_obss)
+            partial_loss = F.mse_loss(partial_out, trans_dict["partial_label"])
+            self.partial_opt.zero_grad()
+            partial_loss.backward()
+            self.partial_opt.step()
+            partial_loss = partial_loss.item()
+        else:
+            partial_loss = None
+
+        return critic_loss, actor_loss, partial_loss
+    
+    def save(self, path="../model/dicts.ptd"):
+        dicts = {
+                "actor": self.actor.state_dict(),
+                "actor_opt": self.actor_opt.state_dict(),
+                "critic": self.critic.state_dict(),
+                "critic_opt": self.critic_opt.state_dict(),
+                "target_actor": self.target_actor.state_dict(),
+                "target_critic": self.target_critic.state_dict(),
+                "lstm": self.lstm.state_dict(),
+            }
+        torch.save(dicts, path)
+
+    def load(self, path="../model/dicts.ptd"):
+        dicts = torch.load(path)
+        self.actor.load_state_dict(dicts["actor"])
+        self.actor_opt.load_state_dict(dicts["actor_opt"])
+        self.critic.load_state_dict(dicts["critic"])
+        self.critic_opt.load_state_dict(dicts["critic_opt"])
+        self.target_actor.load_state_dict(dicts["target_actor"])
+        self.target_critic.load_state_dict(dicts["target_critic"])
+        self.lstm.load_state_dict(dicts["lstm"])

@@ -34,7 +34,7 @@ def CW_inversion(a,
         Phi = matrix.CW_TransMat(T, 0, a)
         states = states_c@Phi.T
         for k in range(MAX_LOOP):
-            if np.linalg.norm(states[:3]-states_c[:,:3],)>d2c:
+            if np.linalg.norm(states[:,:3]-states_c[:,:3],)>d2c:
                 break
             states = states@Phi.T
         t2c = T*(k+1)
@@ -90,7 +90,7 @@ def CW_inversion_d2c(a, c_pos, c_vel, d2c:float,):
 
 
 def CW_tInv_batch(a:np.ndarray, forecast_states:np.ndarray, t2c:np.ndarray,):
-    Phi = matrix.CW_transMat_batch(t2c, np.zeros_like(t2c), a)
+    Phi = matrix.CW_TransMat_batch(t2c, np.zeros_like(t2c), a)
     states = Phi@np.expand_dims(forecast_states, axis=2)
     states = np.squeeze(states, axis=2)
     return states
@@ -102,8 +102,115 @@ def CW_tInv_batch_torch(a:torch.Tensor, forecast_states:torch.Tensor, t2c:torch.
     a = a.detach().cpu().numpy()
     forecast_states = forecast_states.detach().cpu().numpy()
     t2c = t2c.detach().cpu().numpy()
-    Phi = matrix.CW_transMat_batch(t2c, np.zeros_like(t2c), a)
+    Phi = matrix.CW_TransMat_batch(t2c, np.zeros_like(t2c), a)
     states = Phi@np.expand_dims(forecast_states, axis=2)
     states = np.squeeze(states, axis=2)
     states = torch.from_numpy(states).to(device)
     return states
+
+def CW_rInv_batch_torch(a,
+                        forecast_states:torch.Tensor,
+                        d2c:float,
+                        dt = 1.,
+                        max_loop = 10000
+                        ):
+    states_c = torch.zeros_like(forecast_states)
+    t2c = torch.zeros(forecast_states.shape[0], device=forecast_states.device)
+    flags = torch.zeros(forecast_states.shape[0], dtype=torch.bool, device=forecast_states.device,)
+    states = forecast_states
+    Phi = matrix.CW_TransMat(dt, 0, a)
+    Phi = torch.from_numpy(Phi).to(forecast_states.device)
+    for k in range(max_loop):
+        r = torch.norm(states[:,:3]-states_c[:,:3], dim=-1)
+        out = r>d2c
+        _new = out & ~flags
+        states_c[_new] = states[_new]
+        t2c[_new] = k*dt
+        flags = (r>d2c) | flags
+        if flags.all():
+            break
+        states = states@Phi.T
+    return states_c, t2c
+
+
+def get_celestial_table(states0:torch.Tensor, a:float, dt:float, step:int,):
+    '''
+        args:
+            `states0`: initial states of the celestial bodies, shape (batch_size, n_debris, 6)
+            `a`: radius of the target's circular orbit, m
+            `dt`: time step, s
+            `step`: number of time steps
+        return:
+            `table`: states of the celestial bodies at each time step, shape (step, batch_size, n_debris, 6)
+    '''
+    states0 = states0.detach()
+    batch_size = states0.shape[0]
+    n_debris = states0.shape[1]
+    Phi = matrix.CW_TransMat(0, dt, a)
+    Phi = torch.from_numpy(Phi).to(states0.device)
+    table = torch.zeros((step, batch_size, n_debris, 6), device=states0.device)
+    states = states0.clone()
+    for i in range(step):
+        table[i,...] = states[...]
+        states = states@Phi.T
+    return table
+
+def get_closet_approach(states0:torch.Tensor, a:float, dt:float, step:int,):
+    '''
+        args:
+            `states0`: initial states of the celestial bodies, shape (batch_size, 1+n_debris, 6)
+            `a`: radius of the target's circular orbit, m
+            `dt`: time step, s
+            `step`: number of time steps
+        returns:
+            `closet_state`: closest approach state of the debris, shape (batch_size, n_debris, 6)
+            `closed_approach`: closest approach distance, shape (batch_size, n_debris)
+            `closet_step`: closest approach step, shape (batch_size, n_debris)
+            `table`: states of the celestial bodies at each time step, shape (step, batch_size, 1+n_debris, 6)
+    '''
+    batch_size = states0.shape[0]
+    n_debris = states0.shape[1]-1
+    table = get_celestial_table(states0, a, dt, step)
+    primal = table[:, :, 0:1, :]
+    debris = table[:, :, 1: , :]
+    primal_pos = primal[:, :, :, :3]
+    debris_pos = debris[:, :, :, :3]
+    pos_diff = debris_pos-primal_pos
+    pos_diff_norm = torch.norm(pos_diff, dim=-1) # shape: (step, batch_size, n_debris)
+    closet_approach, closet_step = torch.min(pos_diff_norm, dim=0)
+    closet_state = torch.zeros((batch_size, n_debris, 6), device=states0.device)
+    for i in range(batch_size):
+        for j in range(n_debris):
+            closet_state[i,j] = table[closet_step[i,j], i, j+1]
+    return closet_state, closet_approach, closet_step, table
+
+def get_closet_approach_static(primal_states:torch.Tensor, debris_states0:torch.Tensor, a, dt, step):
+    '''
+        args:
+            `primal_states`: states of the primal body, shape (batch_size, 1, 6)
+            `debris_states0`: initial states of the debris, shape (batch_size, n_debris, 6)
+            `a`: radius of the target's circular orbit, m
+            `dt`: time step, s
+            `step`: number of time steps
+        returns:
+            `closet_state`: closest approach state of the debris, shape (batch_size, n_debris, 6)
+            `closed_approach`: closest approach distance, shape (batch_size, n_debris)
+            `closet_step`: closest approach step, shape (batch_size, n_debris)
+            `table`: states of the debris at each time step, shape (step, batch_size, n_debris, 6)
+    '''
+    batch_size = primal_states.shape[0]
+    n_debris = debris_states0.shape[1]
+    if primal_states.dim()==2:
+        primal_states = primal_states.unsqueeze(1)
+    primal_states = primal_states.unsqueeze(0)
+    table = get_celestial_table(debris_states0, a, dt, step)
+    primal_pos = primal_states[:, :, :, :3] # shape: (1, batch_size, 1, 3)
+    debris_pos = table[:, :, :, :3] # shape: (step, batch_size, n_debris, 3)
+    pos_diff = debris_pos-primal_pos
+    pos_diff_norm = torch.norm(pos_diff, dim=-1) # shape: (step, batch_size, n_debris)
+    closet_approach, closet_step = torch.min(pos_diff_norm, dim=0)
+    closet_state = torch.zeros((batch_size, n_debris, 6), device=primal_states.device)
+    for i in range(batch_size):
+        for j in range(n_debris):
+            closet_state[i,j] = table[closet_step[i,j], i, j]
+    return closet_state, closet_approach, closet_step, table

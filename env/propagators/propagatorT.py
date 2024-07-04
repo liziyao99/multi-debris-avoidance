@@ -288,8 +288,8 @@ class CWDebrisPropagatorT(PropagatorT):
 
         trans_mat = matrix.CW_TransMat(0, dt, orbit_rad)
         self.trans_mat = torch.from_numpy(trans_mat).float().to(device)
-        state_dim = matrix.CW_StateMat(orbit_rad)
-        self.state_mat = torch.from_numpy(state_dim).float().to(device)
+        state_mat = matrix.CW_StateMat(orbit_rad)
+        self.state_mat = torch.from_numpy(state_mat).float().to(device)
         self.dt = dt
         self.orbit_rad = orbit_rad
         self.n_debris = n_debris

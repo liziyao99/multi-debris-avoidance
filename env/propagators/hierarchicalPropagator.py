@@ -181,7 +181,7 @@ class H2CWDePropagator0(H2Propagator):
         f1 = 10*space_dim
         f2 = 1000*space_dim
         f3 = 10*space_dim
-        max_time = 3600.
+        max_time = self.dt*self.h1_step*self.h2_step
 
         primal_pos_dist = torch.distributions.Uniform(low=-self.max_dist/f1, high=self.max_dist/f1)
         primal_vel_dist = torch.distributions.Uniform(low=-self.max_dist/f2, high=self.max_dist/f2)
@@ -213,6 +213,54 @@ class H2CWDePropagator0(H2Propagator):
         }
         states = self.statesEncode(states_dict)
         return states.to(self.device)
+    
+    def randomDebris(self, num_states:int, num_debris:int=None, pos_scale=1., vel_scale=0.01, 
+                     _forecast_pos:torch.Tensor=None, 
+                     _forecast_vel:torch.Tensor=None, 
+                     _forecast_time:torch.Tensor=None) -> dict:
+        if num_debris is None:
+            num_debris = self.n_debris
+        space_dim = 3
+        max_time = self.dt*self.h1_step*self.h2_step
+
+        forecast_pos_dist = torch.distributions.Uniform(low=-self.max_dist*pos_scale, high=self.max_dist*pos_scale)
+        forecast_vel_dist = torch.distributions.Uniform(low=-self.max_dist*vel_scale, high=self.max_dist*vel_scale)
+        forecast_time_dist = torch.distributions.Uniform(low=max_time/3, high=2*max_time/3)
+
+        forecast_pos = forecast_pos_dist.sample((num_states, num_debris, space_dim)).to(self.device)
+        forecast_vel = forecast_vel_dist.sample((num_states, num_debris, space_dim)).to(self.device)
+        forecast_time = forecast_time_dist.sample((num_states, num_debris, 1)).to(self.device)
+
+        if (_forecast_pos is not None) or (_forecast_vel is not None) or (_forecast_time is not None):
+            temp = (_forecast_pos, _forecast_vel, _forecast_time)
+            for t in temp:
+                if t is not None:
+                    if t.dim()==2:
+                        t = t.unsqueeze(0)
+                    n = t.shape[1]
+            idx = np.random.choice(num_debris, size=n, replace=False)
+            if _forecast_pos is not None:
+                forecast_pos[:, idx] = _forecast_pos
+            if _forecast_vel is not None:
+                forecast_vel[:, idx] = _forecast_vel
+            if _forecast_time is not None:
+                forecast_time[:, idx] = _forecast_time
+
+        forecast_states = torch.concatenate((forecast_pos, forecast_vel), dim=2)
+        debris_states = cwutils.CW_tInv_batch_torch(a = torch.tensor([self.orbit_rad]*(num_states*num_debris)), 
+                                                    forecast_states = forecast_states.reshape((num_states*num_debris,space_dim*2)), 
+                                                    t2c = forecast_time.flatten(),
+                                                    device = self.device)
+        debris_states = debris_states.reshape((num_states, num_debris, space_dim*2))
+
+        states_dict = {
+            "debris": debris_states,
+            "forecast_time": forecast_time,
+            "forecast_pos": forecast_pos,
+            "forecast_vel": forecast_vel,
+        }
+        return states_dict
+
 
     def obssNormalize(self, obss:torch.Tensor, require_grad=False) -> torch.Tensor:
         with torch.set_grad_enabled(require_grad):
@@ -407,13 +455,15 @@ class thrustCWPropagator(H2CWDePropagator):
             d2o_rewards = -d2o_scale*d2o # [-inf, 0]
 
             d2d = d2d/self.safe_dist
-            d2d_scale = 2.
-            d2d_rewards = utils.smoothStepFunc(d2d, loc=1, k=30, scale=d2d_scale) # [0, 2]
+            d2d_scale = 10.
+            d2d_rewards = torch.where(d2d<1, -d2d_scale, 0)
+            # d2d_rewards = utils.penaltyFunc(d2d, loc=1, k=30, scale=d2d_scale)
             d2d_rewards = torch.min(d2d_rewards, dim=1)[0]
 
             d2p = d2p/self.safe_dist
-            d2p_scale = 2.
-            d2p_rewards = utils.smoothStepFunc(d2p, loc=1, k=30, scale=d2p_scale) # [0, 2]
+            d2p_scale = 1.
+            d2p_rewards = torch.where(d2d<1, -d2p_scale, 0)
+            # d2p_rewards = utils.smoothStepFunc(d2p, loc=1, k=30, scale=d2p_scale)
             d2p_rewards = torch.where(is_approaching, d2p_rewards, d2p_scale)
             d2p_rewards = torch.min(d2p_rewards, dim=1)[0]
 
@@ -909,38 +959,6 @@ class H2PlanTrackPropagator(thrustCWPropagator):
     def __init__(self, n_debris, h1_step=6, h2_step=600, dt=1, orbit_rad=7000000, max_dist=5000, safe_dist=500, device="cpu") -> None:
         super().__init__(n_debris, h1_step, h2_step, dt, orbit_rad, max_dist, safe_dist, device)
         self.h1_action_dim = 3 # target pos
-    
-    def getPlanRewards(self, states: torch.Tensor, h1_actions:torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:
-        with torch.set_grad_enabled(require_grad):
-            batch_size = states.shape[0]
-            target = h1_actions
-            target = target.reshape((batch_size,1,self.h1_action_dim))
-            target_pos = target[:, :, :3]
-            decoded = self.statesDecode(states)
-            primal_pos = decoded["primal"][:,:,:3]
-
-            forecast_time = decoded["forecast_time"].squeeze(-1)
-            forecast_states = torch.concatenate((decoded["forecast_pos"],decoded["forecast_vel"]),dim=-1)
-            forecast_acc = (forecast_states@self.state_mat.T)[:,:,3:]
-            n_acc = forecast_acc/torch.norm(forecast_acc, dim=-1, keepdim=True)
-            n_vel = decoded["forecast_vel"]/torch.norm(decoded["forecast_vel"], dim=-1, keepdim=True)
-            normal_vec = torch.cross(n_vel, n_acc, dim=-1)
-            normal_vec = normal_vec/torch.norm(normal_vec, dim=-1, keepdim=True)
-
-            dot_lateral = torch.sum((target_pos-decoded["forecast_pos"])*(-n_acc), axis=-1) # negative dot product of relative position and debris' acceleration
-            dist_lateral = dot_lateral-self.safe_dist
-            dot_vertical = torch.sum((target_pos-decoded["forecast_pos"])*normal_vec, axis=-1) # dot product of relative position and normal vector of debris' plane
-            dist_vertical = torch.abs(dot_vertical)-self.safe_dist
-            d2d = torch.max(dist_lateral, dist_vertical) # distance to each debris' forecast
-            d2d = torch.where(forecast_time>-10, d2d, 1e6)
-            d2d = torch.min(d2d, dim=1)[0] # min distance to each debris' forecast
-
-            nd2t = torch.norm((target_pos-primal_pos), dim=-1)/self.max_dist # normalized distance from primal pos to target
-            nd2o = torch.norm(target_pos, dim=-1)/self.max_dist # normalized distance from target to origin
-
-            rewards = torch.where(d2d>0, -(nd2t+nd2o)/2, -1)
-            avoid_rate = (d2d>0).sum()/batch_size
-            return rewards.detach(), avoid_rate.item()
 
     def getH2Rewards(self, states: torch.Tensor, h1_actions: torch.Tensor, actions: torch.Tensor, require_grad=False) -> torch.Tensor:
         '''
@@ -1019,38 +1037,93 @@ class H2PlanTrackPropagator(thrustCWPropagator):
         loss = loss.mean()
         return loss, (err_loss.mean().item(), actions_loss.mean().item(), actions_increment_loss.mean().item(), overshoot_loss.mean().item())
     
-    def seqTrack(self, 
-                 tracker, 
-                 init_states:torch.Tensor=None, 
-                 targets:torch.Tensor=None, 
-                 horizon:int=None, 
-                 batch_size=256,) -> torch.Tensor:
-            '''
-                args:
-                    `init_states`: shape (batch_size,state_dim)
-                    `targets_seq`: shape (horizon,batch_size,state_dim)
-                    `tracker`: see `trackNet2`.
-            '''
-            init_states = self.randomInitStates(batch_size) if init_states is None else init_states
-            horizon = self.h2_step if horizon is None else horizon
-            states = init_states
-            delta_pos = 1000*torch.randn((batch_size, self.h1_action_dim), device=self.device)
-            targets = init_states[:,:self.h1_action_dim] + delta_pos
-            targets = targets.detach()
-            primal_states_seq = []
-            targets_seq = []
-            for i in range(horizon):
-                primal_states = states[:, :6]
-                primal_states_seq.append(primal_states)
-                targets_seq.append(targets)
-                tracker_input = torch.hstack((primal_states, targets)).detach() # TODO: obs
-                actions = tracker(tracker_input)
-                states = self.getNextStates(states, actions, require_grad=True)
-            primal_states_seq = torch.stack(primal_states_seq)
-            targets_seq = torch.stack(targets_seq)
-            loss = tracker.loss(primal_states_seq, targets_seq)
-            return loss
-    
+    def getSeqPlanRewards(self, 
+                          states: torch.Tensor, 
+                          targets_seqs:torch.Tensor, 
+                          require_grad=False) -> torch.Tensor:
+        '''
+            args:
+                `states`: shape (batch_size, state_dim)
+                `targets_seq`: shape (h1_step, batch_size, h1_action_dim), notice that targets_seqs should not be normalized.
+        '''
+        with torch.set_grad_enabled(require_grad):
+            decoded = self.statesDecode(states, require_grad=require_grad)
+            primal = decoded["primal"].squeeze(1)
+            debris = decoded["debris"]
+            return self.getSeqPlanRewards_(primal, debris, targets_seqs, require_grad)
+        
+    def getSeqPlanRewards_(self, 
+                          primal_states: torch.Tensor,
+                          debris_states: torch.Tensor, 
+                          targets_seqs:torch.Tensor, 
+                          require_grad=False) -> torch.Tensor:
+        '''
+            args:
+                `primal_states`: shape (batch_size, 6)
+                `debris_states`: shape (batch_size, n_debris, 6)
+                `targets_seq`: shape (h1_step, batch_size, h1_action_dim), notice that targets_seqs should not be normalized.
+        '''
+        with torch.set_grad_enabled(require_grad):
+            batch_size = primal_states.shape[0]
+            seq_len = targets_seqs.shape[0] # =h1_step
+            primal_pos = primal_states[:,:3].unsqueeze(0) # shape: (1, batch_size, 3)
+            c_tables = cwutils.get_celestial_table(debris_states, self.orbit_rad, self.dt, self.h1_step*self.h2_step)
+            c_tables = c_tables[:,:,:,:3] # position, shape: (h1_step*h2_step, batch_size, n_debris, 3)
+            path_points = torch.cat((primal_pos, targets_seqs), dim=0) # shape: (1+seq_len, batch_size, 3)
+            
+            pos_increments = path_points[1:]-path_points[:-1] # shape: (seq_len, batch_size, 3)
+            pos_increments = torch.norm(pos_increments, dim=-1) # shape: (seq_len, batch_size)
+            pos_increments = torch.sum(pos_increments, dim=0) # shape(batch_size,)
+            rewards_p = 1 - pos_increments/self.max_dist
+
+            d2o = torch.norm(targets_seqs[-1], dim=-1) # shape: (batch_size,)
+            rewards_o = 1 - d2o/self.max_dist
+
+            paths = utils.linspace(path_points[:-1], path_points[1:], self.h2_step, require_grad=require_grad) # shape: (h2_step, seq_len, batch_size, 3)
+            paths = paths.reshape((self.h2_step*seq_len, batch_size, 3)).unsqueeze(dim=2) # shape: (h1_step*h2_step, batch_size, 1, 3)
+            pos_diff = c_tables - paths # shape: (h1_step*h2_step, batch_size, n_debris, 3)
+            dist = torch.norm(pos_diff, dim=-1) # shape: (h1_step*h2_step, batch_size, n_debris)
+            dist = torch.min(dist, dim=-1)[0] # shape: (h1_step*h2_step, batch_size)
+            dist = torch.min(dist, dim=0)[0] # shape: (batch_size,)
+
+            rewards = torch.where(dist>self.safe_dist, 1+rewards_p+rewards_o, dist/self.safe_dist)
+            return rewards
+        
+    def getPlanRewards_(self, 
+                        primal_states: torch.Tensor,
+                        debris_states: torch.Tensor, 
+                        targets:torch.Tensor, 
+                        require_grad=False) -> torch.Tensor:
+        '''
+            args:
+                `primal_states`: shape (batch_size, 6)
+                `debris_states`: shape (batch_size, n_debris, 6)
+                `targets`: shape (batch_size, h1_action_dim), notice that targets_seqs should not be normalized.
+        '''
+        with torch.set_grad_enabled(require_grad):
+            batch_size = primal_states.shape[0]
+            primal_pos = primal_states[:,:3] # shape: (batch_size, 3)
+            c_tables = cwutils.get_celestial_table(debris_states, self.orbit_rad, self.dt, self.h1_step*self.h2_step)
+            c_tables = c_tables[:,:,:,:3] # position, shape: (h1_step*h2_step, batch_size, n_debris, 3)
+            
+            pos_increments = targets - primal_pos # shape: (batch_size, 3)
+            pos_increments = torch.norm(pos_increments, dim=-1) # shape: (batch_size)
+            rewards_p = 1 - pos_increments/self.max_dist
+
+            d2o = torch.norm(targets, dim=-1) # shape: (batch_size,)
+            rewards_o = 1 - d2o/self.max_dist
+
+            targets = targets.unsqueeze(0)
+            targets = targets.unsqueeze(2) # shape: (1, batch_size, 1, 3)
+            pos_diff = c_tables - targets # shape: (h1_step*h2_step, batch_size, n_debris, 3)
+            dist = torch.norm(pos_diff, dim=-1) # shape: (h1_step*h2_step, batch_size, n_debris)
+            dist = torch.min(dist, dim=-1)[0] # shape: (h1_step*h2_step, batch_size)
+            dist = torch.min(dist, dim=0)[0] # shape: (batch_size,)
+
+            rewards = torch.where(dist>self.safe_dist, 1+rewards_p+rewards_o, dist/self.safe_dist)
+            # rewards = torch.where(dist>self.safe_dist, 1+rewards_p+rewards_o, 0)
+            return rewards
+
     def obssNormalize(self, obss:torch.Tensor, require_grad=False) -> torch.Tensor:
         with torch.set_grad_enabled(require_grad):
             obss = obss/self.obss_normalize_scale

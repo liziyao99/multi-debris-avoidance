@@ -119,7 +119,7 @@ def concat_dicts(dicts:typing.List[dict]):
     d = {}
     for key in dicts[0].keys():
         d[key] = []
-    for i in range(1,len(dicts)):
+    for i in range(0,len(dicts)):
         if d.keys()!=dicts[i].keys():
             raise(ValueError("dicts must have same keys."))
         for key in d.keys():

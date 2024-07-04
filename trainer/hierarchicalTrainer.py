@@ -121,6 +121,53 @@ class H2Trainer:
             self.hAgent[1].actor_opt.step()
             h2loss = h2loss.detach()
         return h1td, h2Loss
+    
+    def completeSim(self, states0:torch.Tensor=None, h1_explore_eps=0., states_num=1, train_h2a=False, prop_with_grad=False):
+        if states0 is None:
+            states0 = self.prop.randomInitStates(states_num)
+        prop_with_grad = prop_with_grad or train_h2a
+        batch_size = states0.shape[0]
+        h1td = D.init_transDictBatch(self.prop.h1_step, batch_size, self.prop.state_dim, self.prop.obs_dim, self.prop.h1_action_dim,
+                                     items=("terminal_rewards",),
+                                     struct="torch", device=self.device)
+        h2Loss = []
+        step = 0
+        done = False
+        done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        states = states0
+        obss = self.prop.getObss(states)
+        h2tds = []
+        while not done and step<self.prop.h1_step:
+            h1td["states"][step, ...] = states[...].detach()
+            h1td["obss"][step, ...] = obss[...].detach()
+            if np.random.rand()<h1_explore_eps:
+                h1actions = self.hAgent[0].actor.uniSample(batch_size)
+            else:
+                h1actions = None
+            _h2td, states, h2rs, h1as, h1rs, dones, trs = self.h2Sim(states, h1actions, prop_with_grad=prop_with_grad)
+            h2tds.append(D.numpy_dict(_h2td))
+            obss = self.prop.getObss(states)
+            h1td["actions"][step, ...] = h1as[...].detach()
+            h1td["next_states"][step, ...] = states[...].detach()
+            h1td["next_obss"][step, ...] = obss[...].detach()
+            h1td["rewards"][step, ...] = h1rs[...].detach()
+            h1td["dones"][step, ...] = dones[...].detach()
+            h1td["terminal_rewards"][step, ...] = trs[...].detach()
+
+            h2loss = -h2rs.mean()
+            h2Loss.append(h2loss)
+
+            done_flags = done_flags | dones
+            done = torch.all(done_flags)
+            step += 1
+        h2Loss = torch.mean(torch.stack(h2Loss))
+        if train_h2a and prop_with_grad:
+            self.hAgent[1].actor_opt.zero_grad()
+            h2loss.backward()
+            self.hAgent[1].actor_opt.step()
+            h2loss = h2loss.detach()
+        h2td = D.concat_dicts(h2tds)
+        return h2td, h1td, h2Loss
         
     def train(self, epoch:int, episode:int, select_itr:int, select_size:int, explore_eps=0.5, batch_size=640):
         data_list = {

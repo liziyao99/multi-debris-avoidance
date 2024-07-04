@@ -124,67 +124,28 @@ def sac():
     mt.debug()
 
 if __name__ == "__main__":
+    from env.dynamic import cwutils
+
     import matplotlib.pyplot as plt
     import torch
     import numpy as np
     from env.propagators.hierarchicalPropagator import H2PlanTrackPropagator
+    prop = H2PlanTrackPropagator(8, h1_step=3, h2_step=1200, safe_dist=1000, device="cuda")
     
-    device = "cuda"
-    propArgs = {
-        "n_debris": 8
-    }
-    hAgentArgs = {
-        "action_bounds": [1., 1., 1.],
-        "sigma_upper_bounds": [1e2]*3,
-        "h1a_hiddens": [512]*6, 
-        "h2a_hiddens": [512]*4, 
-        "h1c_hiddens": [512]*6,
-        "h2out_ub": [ 0.06]*3, 
-        "h2out_lb": [-0.06]*3, 
-        "h2a_lr": 2e-3,
-    }
-    bufferArgs = {
-        "keys": None,
-        "capacity": 10000,
-        "batch_size": 640,
-    }
-    loss_keys = ["critic_loss", "actor_loss"]
-    trainerArgs = {
-        "propArgs": propArgs,
-        "hAgentArgs": hAgentArgs,
-        "bufferArgs": None,
-        "device": device,
-        "loss_keys": loss_keys
-    }
+    from agent.nonLearning import subSeqAgent
+    ssa = subSeqAgent(prop.safe_dist, device=prop.device)
+
+    batch_size = 512
+    states = prop.randomInitStates(batch_size)
+    decoded = prop.statesDecode(states)
+    primal = decoded["primal"]
+    n_debris = 8
+    debris = prop.randomDebris(batch_size, n_debris, pos_scale=1, vel_scale=0.03)
+    # debris_ = decoded["debris"]
+    debris_ = debris["debris"]
     
-    prop = H2PlanTrackPropagator(8, device="cuda")
+    cstate, _, _, _ = cwutils.get_closet_approach_static(primal, debris_, prop.orbit_rad, prop.dt, 3600)
+    actions = ssa.act(primal, cstate)
 
-    from agent.hierarchicalAgent import trackCW_SAC
-    action_bounds = [1., 1., 1.]
-    sigma_bounds=  [1e2]*3
-    h2out_ub = [ 0.06]*3
-    h2out_lb = [-0.06]*3
-    hAgent = trackCW_SAC(obs_dim=prop.obs_dim,
-                        action_bounds=action_bounds,
-                        sigma_upper_bounds=sigma_bounds,
-                        h1a_hiddens=[512]*6, 
-                        h2a_hiddens=[512]*4, 
-                        h1c_hiddens=[512]*6,
-                        h2out_ub=h2out_ub, 
-                        h2out_lb=h2out_lb, 
-                        h2a_lr=2e-3,
-                        device="cuda")
-
-    import data.buffer
-    buffer = data.buffer.replayBuffer(keys=None, capacity=10000, batch_size=640)
-
-    from trainer.hierarchicalTrainer import H2Trainer, H2PlanTrackTrainer, H2PlanTrackTrainerV2
-    # T = H2PlanTrackTrainer(prop, hAgent, buffer, loss_keys)
-    # T2 = H2PlanTrackTrainerV2(propArgs, hAgentArgs, bufferArgs, device, loss_keys)
-
-    from trainer.myMp.mpH2 import mpH2Trainer
-    mpt = mpH2Trainer(2, trainerCls=H2PlanTrackTrainerV2, 
-                      trainerArgs=trainerArgs,
-                      buffer=buffer)
-
-    mpt.train(1, 10)
+    for i in range(batch_size):
+        action = ssa.act(primal[i:i+1], cstate[i:i+1])

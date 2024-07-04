@@ -42,17 +42,18 @@ class replayBuffer:
         for dict in dicts:
             self.from_dict(dict)
 
-    def to_dict(self, transitions:List[tuple]):
+    def to_dict(self, transitions:List[tuple], stack=True):
         if len(transitions) == 0:
             return {}
         trans_dict = dict(zip(self._keys, zip(*transitions)))
-        for key in self._keys:
-            if type(trans_dict[key][0]) is torch.Tensor:
-                trans_dict[key] = torch.vstack(trans_dict[key])
-            elif type(trans_dict[key][0]) is np.ndarray:
-                trans_dict[key] = np.vstack(trans_dict[key])
-            else:
-                trans_dict[key] = np.array(trans_dict[key])
+        if stack:
+            for key in self._keys:
+                if type(trans_dict[key][0]) is torch.Tensor:
+                    trans_dict[key] = torch.vstack(trans_dict[key])
+                elif type(trans_dict[key][0]) is np.ndarray:
+                    trans_dict[key] = np.vstack(trans_dict[key])
+                else:
+                    trans_dict[key] = np.array(trans_dict[key])
         return trans_dict
     
     def to_dicts(self, is_batch=True, batch_size=None) -> List[dict]:
@@ -68,11 +69,11 @@ class replayBuffer:
             dicts.append(self.to_dict(list(self.buffer)))
         return dicts
 
-    def sample(self, batch_size:int=None):
+    def sample(self, batch_size:int=None, stack=True):
         batch_size = self.batch_size if batch_size is None else batch_size
         batch_size = min(batch_size, self.size)
         transitions = random.sample(self.buffer, batch_size)
-        trans_dict = self.to_dict(transitions)
+        trans_dict = self.to_dict(transitions, stack=stack)
         return trans_dict
     
     def key2idx(self, key:str):

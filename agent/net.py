@@ -1,10 +1,11 @@
 import torch
 from torch import nn
 import typing
+from agent.baseModule import baseModule
 
 from agent.OBC import outputBoundConfig_mp as outputBoundConfig
 
-class fcNet(nn.Module):
+class fcNet(baseModule):
     def __init__(self, 
                  n_feature:int, 
                  n_output:int,
@@ -13,7 +14,6 @@ class fcNet(nn.Module):
         super().__init__()
         self.n_feature = n_feature
         self.n_output = n_output
-        self._dummy_param = nn.Parameter(torch.empty(0))
         
         fc = []
         for i in range(len(n_hiddens)):
@@ -21,10 +21,6 @@ class fcNet(nn.Module):
             fc.append(nn.ReLU())
         fc.append(nn.Linear(n_hiddens[-1], n_output))
         self.fc_layers = nn.Sequential(*fc)
-
-    @property
-    def device(self):
-        return self._dummy_param.device
     
     def forward(self, x):
         fc_out = self.fc_layers(x)
@@ -120,7 +116,6 @@ class ballFcNet(boundedFcNet):
         vec = vec/norm*rad
         vec = vec.reshape(shape)
         return vec
-
     
 class boundedLSTM(boundedFcNet):
     def __init__(self, 
@@ -165,6 +160,9 @@ class boundedLSTM(boundedFcNet):
         lstm_out, (hn, cn) = self.lstm(x, h0c0)
         fc_out = self.fc_layers(lstm_out)
         return self.post_process(fc_out)
+    
+    def post_process(self, x):
+        return self.obc(x)
     
     def forward_with_hidden(self, x, h0c0:typing.Tuple[torch.Tensor]=None):
         '''
@@ -306,44 +304,6 @@ class trackNet(boundedFcNet):
         state_loss = torch.sum((error_seq@self.state_weights)*error_seq, dim=(0,-1)) # shape (batch_size,)
         control_loss = torch.sum((control_seq@self.control_weights)*control_seq, dim=(0,-1)) # shape (batch_size,)
         total_loss = torch.mean(state_loss+control_loss)
-        return total_loss
-    
-class trackNet2(trackNet):
-    def __init__(self, 
-                 n_target: int,
-                 n_control: int, 
-                 n_hiddens: typing.List[int], 
-                 state_weights: torch.Tensor, 
-                 control_weights: torch.Tensor,
-                 upper_bounds: torch.Tensor, 
-                 lower_bounds: torch.Tensor):
-        boundedFcNet.__init__(self, n_target*3, n_control, n_hiddens, upper_bounds, lower_bounds)
-        self.n_target = n_target
-        self.n_state = n_target*2
-        self.state_weights = torch.diag(state_weights)
-        self.control_weights = torch.diag(control_weights)
-
-    def to(self, device:str, **kwargs):
-        self.state_weights = self.state_weights.to(device=device)
-        self.control_weights = self.control_weights.to(device=device)
-        return super().to(device=device, **kwargs)
-
-    def loss(self, state_seq:torch.Tensor, track_seq:torch.Tensor):
-        '''
-            args:
-                `pos_seq`: shape (horizon,batch_size,n_state), must be propagated by `propagatorT` and contain grad.
-                `track_seq`: shape (horizon,batch_size,n_target).
-        '''
-        track_seq = track_seq.detach()
-        x = torch.concat((state_seq, track_seq), dim=-1)
-        pos_seq = state_seq[:, :, :self.n_target]
-        vel_seq = state_seq[:, :, self.n_target:]
-        error_seq = pos_seq-track_seq # shape (horizon,batch_size,n_target)
-        control_seq = self.forward(x) # shape (horizon,batch_size,n_control)
-        pos_loss = torch.sum((error_seq@self.state_weights)*error_seq, dim=(0,-1)) # shape (batch_size,)
-        vel_loss = torch.sum((vel_seq@self.state_weights)*vel_seq, dim=(0, -1)) # shape (batch_size,)
-        control_loss = torch.sum((control_seq@self.control_weights)*control_seq, dim=(0,-1)) # shape (batch_size,)
-        total_loss = torch.mean(pos_loss+vel_loss+control_loss)
         return total_loss
 
 

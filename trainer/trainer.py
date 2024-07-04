@@ -230,7 +230,7 @@ class planTrackTrainer:
                 progress.update(task, advance=1)
         return loss_list
     
-    def trainPlanner(self, episode=100, epoch=10, batch_size=256, action_batch=64, explore_eps=0.5, 
+    def trainPlanner(self, episode=100, epoch=10, batch_size=256, action_batch=64, explore_eps=0.5, p_explore_eps=0.5,
                      pertinence=True, pp_size:int=None):
         actor_loss_list = []
         critic_loss_list = []
@@ -253,7 +253,18 @@ class planTrackTrainer:
                     obss = self.mainProp.getObss(states)
                     obss_ = torch.from_numpy(obss).float().to(self.agent.device)
                     if torch.rand(1) < explore_eps:
-                        targets_, planed_ = self.agent.random_track_target(batch_size)
+                        if torch.rand(1) < p_explore_eps:
+                            decoded = self.mainProp.statesDecode(states)
+                            idx = np.random.randint(0, self.mainProp.n_debris)
+                            debris_pos = decoded["forecast_pos"][:,idx]
+                            debris_vel = decoded["forecast_vel"][:,idx]
+                            targets = np.zeros((batch_size,6), dtype=np.float32)
+                            dt = np.random.randn(batch_size,1) * 10
+                            targets[:,:3] = debris_pos + debris_vel * dt
+                            targets_ = torch.from_numpy(targets).float().to(self.agent.device)
+                            planed_ = targets_[:,:3]
+                        else:
+                            targets_, planed_ = self.agent.random_track_target(batch_size)
                     else:
                         targets_, planed_ = self.agent.track_target(obss_)
                         if pertinence:

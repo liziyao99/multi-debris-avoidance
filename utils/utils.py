@@ -4,6 +4,16 @@ import numpy as np
 def affine(x, s0, t0, s1, t1):
     return ((x-s0)*t1 + (t0-x)*s1)/(t0-s0)
 
+def linspace(a:torch.Tensor, b:torch.Tensor, step:int, require_grad=False):
+    if a.shape != b.shape:
+        raise ValueError("a and b should have same shape.")
+    shape = [step]+list(a.shape)
+    x = torch.zeros(shape, dtype=a.dtype, device=a.device, requires_grad=require_grad)
+    d = b-a
+    for i in range(step):
+        x[i] = a + d*i/step
+    return x
+
 def dotEachRow(a, b, keepdim=False):
     prod = a*b
     if isinstance(a, torch.Tensor):
