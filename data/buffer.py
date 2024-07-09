@@ -23,7 +23,7 @@ class replayBuffer:
             self._keys = []
             self.key_init = False
 
-    def from_dict(self, trans_dict:dict, extend=True):
+    def from_dict(self, trans_dict:dict, stacked=True, extend=True):
         datas = []
         if len(trans_dict.keys())==0:
             # empty dict passed when buffer is empty

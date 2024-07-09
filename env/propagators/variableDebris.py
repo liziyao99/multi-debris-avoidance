@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+import typing
 from env.dynamic import matrix
 from utils import lineProj
 from env.dynamic import cwutils
+import agent.utils as autils
 
 class vdPropagator:
     def __init__(self,
@@ -15,6 +17,7 @@ class vdPropagator:
                  safe_dist=5e1,
                  view_dist=1e4,
                  p_new_debris=0.001,
+                 gamma:float=None,
                  device:str=None) -> None:
         self.max_n_debris = max_n_debris
         self.dt = dt
@@ -23,6 +26,7 @@ class vdPropagator:
         self.safe_dist = safe_dist
         self.view_dist = view_dist
         self.p_new_debris = p_new_debris
+        self.gamma = gamma
         self.device = device
         
         trans_mat = matrix.CW_TransMat(0, dt, orbit_rad)
@@ -76,6 +80,7 @@ class vdPropagator:
                   primal_states:torch.Tensor, 
                   debris_states:torch.Tensor, 
                   actions:torch.Tensor, 
+                  discard_leaving=True,
                   new_debris=True,
                   batch_debris_obss=True,
                   require_grad=False):
@@ -83,9 +88,10 @@ class vdPropagator:
             returns: `(next_primal_states, next_debris_states)`, `rewards`, `dones`, `(next_primal_obss, next_debris_obss)`
         '''
         next_primal_states, next_debris_states = self.getNextStates(primal_states, debris_states, actions, require_grad=require_grad)
-        rewards = self.getRewards(primal_states, debris_states, actions, require_grad=require_grad)
-        dones = self.getDones(primal_states, debris_states, require_grad=False)
-        next_debris_states = self.discard_leaving(next_debris_states)
+        rewards = self.getRewards(next_primal_states, next_debris_states, actions, require_grad=require_grad)
+        dones = self.getDones(next_primal_states, next_debris_states, require_grad=False)
+        if discard_leaving:
+            next_debris_states = self.discard_leaving(next_debris_states)
         if new_debris:
             n_debris = next_debris_states.shape[0]
             if n_debris==0:
@@ -115,7 +121,7 @@ class vdPropagator:
             next_states = states@self.trans_mat.T
             return next_states
     
-    def getObss(self, primal_states:torch.Tensor, debris_states:torch.Tensor, batch_debris_obss=True, require_grad=False) -> torch.Tensor:
+    def getObss(self, primal_states:torch.Tensor, debris_states:torch.Tensor, batch_debris_obss=True, require_grad=False):
         '''
             args:
                 `primal_states`: shape: (n_primal, 6)
@@ -129,10 +135,12 @@ class vdPropagator:
             n_debris = debris_states.shape[0]
             obs_noise = self.obs_noise_dist.sample((n_debris,))
             debris_states = debris_states + obs_noise
+            rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)
             primal_obss = primal_states*self._obs_zoom
-            debris_obss = debris_states*self._obs_zoom
-            if batch_debris_obss:
-                debris_obss = torch.stack([debris_obss]*n_primal, dim=0)
+            # debris_obss = debris_states*self._obs_zoom
+            # if batch_debris_obss:
+            #     debris_obss = torch.stack([debris_obss]*n_primal, dim=0)
+            debris_obss = rel_states*self._obs_zoom.unsqueeze(dim=0)
             return primal_obss, debris_obss
         
     def getRewards(self, primal_states:torch.Tensor, debris_states:torch.Tensor, actions:torch.Tensor, require_grad=False) -> torch.Tensor:
@@ -154,12 +162,16 @@ class vdPropagator:
             d2o = primal_states[:,:3].norm(dim=-1)
             in_area = d2o<self.max_dist
             # area_rewards = self.area_reward*torch.where(in_area, 1-d2o/self.max_dist, self.collision_reward*torch.ones_like(d2o))
-            area_rewards = 1-d2o/self.max_dist
+            area_rewards = 1 - d2o/self.max_dist
 
             vel = primal_states[:,3:].norm(dim=-1)
             vel_rewards = -vel/20
 
             rewards = collision_rewards + fuel_rewards + area_rewards + vel_rewards
+            if self.gamma is not None:
+                if self.gamma>=1 or self.gamma<0:
+                    raise ValueError("Invalid gamma")
+                rewards = rewards*(1-self.gamma)
             return rewards
         
     def getDones(self, primal_states:torch.Tensor, debris_states:torch.Tensor, require_grad=False) -> torch.Tensor:
@@ -171,7 +183,11 @@ class vdPropagator:
                 `dones`: shape: (n_primal,)
         '''
         with torch.set_grad_enabled(require_grad):
-            dones = torch.zeros(primal_states.shape[0], dtype=torch.bool, device=self.device)
+            distances = self.distances(primal_states, debris_states)
+            dones_collide = (distances<self.safe_dist).any(dim=-1)
+            d2o = primal_states[:,:3].norm(dim=-1)
+            dones_out = d2o>self.max_dist
+            dones = dones_collide | dones_out
             return dones
         
     def discard_leaving(self, debris_states:torch.Tensor) -> torch.Tensor:
@@ -184,20 +200,20 @@ class vdPropagator:
             debris_states = debris_states[~leaving]
             return debris_states
         
-    def is_leaving(self, states:torch.Tensor) -> torch.Tensor:
+    def is_leaving(self, debris_states:torch.Tensor) -> torch.Tensor:
         '''
             args:
                 `states`: shape: (n, 6)
         '''
         with torch.no_grad():
-            pos = states[:, :3]
-            vel = states[:, 3:]
+            pos = debris_states[:, :3]
+            vel = debris_states[:, 3:]
             dist = torch.norm(pos, dim=-1)
             dot = torch.sum(pos*vel, dim=-1)
             leaving = (dot>0) & (dist>self.max_dist)
             return leaving
         
-    def distances(self, primal_states:torch.Tensor, debris_states:torch.Tensor) -> torch.Tensor:
+    def distances(self, primal_states:torch.Tensor, debris_states:torch.Tensor|typing.List[torch.Tensor]) -> torch.Tensor:
         '''
             args:
                 `primal_states`: shape: (n_primal, 6)
@@ -206,9 +222,15 @@ class vdPropagator:
                 `distances`: shape: (n_primal, n_debris)
         '''
         with torch.no_grad():
-            primal_pos = primal_states[:, :3]
-            debris_pos = debris_states[:, :3]
-            primal_pos = primal_pos.unsqueeze(dim=1)
-            debris_pos = debris_pos.unsqueeze(dim=0)
-            distances = torch.norm(primal_pos-debris_pos, dim=-1) # shape: (n_primal, n_debris)
+            if isinstance(debris_states, torch.Tensor):
+                primal_pos = primal_states[:, :3]
+                debris_pos = debris_states[:, :3]
+                primal_pos = primal_pos.unsqueeze(dim=1)
+                debris_pos = debris_pos.unsqueeze(dim=0)
+                distances = torch.norm(primal_pos-debris_pos, dim=-1) # shape: (n_primal, n_debris)
+            elif isinstance(debris_states, typing.Iterable):
+                autils.var_len_seq_sort(debris_states)
+                raise NotImplementedError
+            else:
+                raise TypeError("debris_states must be torch.Tensor or Iterable")
             return distances

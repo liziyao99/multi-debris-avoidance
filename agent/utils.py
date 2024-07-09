@@ -34,6 +34,9 @@ def var_len_seq_sort(seqs:typing.List[torch.Tensor]):
         Sort a batch of sequences by length in descending order.
         args:
             `seqs`: each element is a 2D tensor with shape (seq_len, feature_dim).
+        returns:
+            `stacked`: a list of 3D tensors with shape (_size, seq_len, feature_dim).
+            `indeces`: a list of 1D tensors with shape (_size,).
     """
     len, idx = torch.sort(torch.tensor([x.shape[0] for x in seqs]))
     devided = _split_by_values(len, [idx])

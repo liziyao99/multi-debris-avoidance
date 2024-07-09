@@ -128,9 +128,12 @@ def concat_dicts(dicts:typing.List[dict]):
         d[key] = np.concatenate(d[key], axis=0)
     return d
 
-def split_dict(trans_dict:dict, batch_size:int):
+def split_dict(trans_dict:dict, batch_size:int, shuffle=False):
     dicts = []
-    total = trans_dict["states"].shape[0]
+    key = list(trans_dict.keys())[0]
+    total = len(trans_dict[key])
+    if shuffle:
+        pass # TODO: shuffle for list
     n_batches = math.ceil(total/batch_size)
     for i in range(n_batches):
         d = {}
