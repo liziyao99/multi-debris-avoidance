@@ -63,8 +63,9 @@ class vdPropagator:
             scale=self._dsC_scale)
         
         self.max_thrust = max_thrust
-        self.collision_reward = -1000.
+        self.collision_reward = -2.
         self.area_reward = 1.
+        self.beta_action = 1/self.max_dist
         
     def randomPrimalStates(self, n:int) -> torch.Tensor:
         return self.primal_state0_dist.sample((n,))
@@ -111,10 +112,14 @@ class vdPropagator:
         with torch.set_grad_enabled(require_grad):
             next_primal_states = primal_states@self.trans_mat.T
             next_debris_states = debris_states@self.trans_mat.T
-            thrust = actions*self.max_thrust
-            con_vec = matrix.CW_constConVecsT(0, self.dt, thrust, self.orbit_rad) # shape: (n_primal, 6)
+            con_vec = self.conVecs(actions, require_grad=require_grad) # shape: (n_primal, 6)
             next_primal_states = next_primal_states + con_vec
             return next_primal_states, next_debris_states
+        
+    def conVecs(self, actions:torch.Tensor, require_grad=False):
+        with torch.set_grad_enabled(require_grad):
+            thrust = actions*self.max_thrust
+            return matrix.CW_constConVecsT(0, self.dt, thrust, self.orbit_rad) # shape: (n_primal, 6)
         
     def getNextStatesNominal(self, states:torch.Tensor, require_grad=False) -> torch.Tensor:
         with torch.set_grad_enabled(require_grad):
@@ -157,7 +162,7 @@ class vdPropagator:
             any_collision = (distances<self.safe_dist).any(dim=-1)
             collision_rewards = any_collision.float()*self.collision_reward
 
-            fuel_rewards = 1 - actions.norm(dim=-1)
+            fuel_rewards = (1-actions.norm(dim=-1))*self.beta_action
 
             d2o = primal_states[:,:3].norm(dim=-1)
             in_area = d2o<self.max_dist
@@ -213,7 +218,7 @@ class vdPropagator:
             leaving = (dot>0) & (dist>self.max_dist)
             return leaving
         
-    def distances(self, primal_states:torch.Tensor, debris_states:torch.Tensor|typing.List[torch.Tensor]) -> torch.Tensor:
+    def distances(self, primal_states:torch.Tensor, debris_states:torch.Tensor) -> torch.Tensor:
         '''
             args:
                 `primal_states`: shape: (n_primal, 6)
@@ -228,9 +233,54 @@ class vdPropagator:
                 primal_pos = primal_pos.unsqueeze(dim=1)
                 debris_pos = debris_pos.unsqueeze(dim=0)
                 distances = torch.norm(primal_pos-debris_pos, dim=-1) # shape: (n_primal, n_debris)
-            elif isinstance(debris_states, typing.Iterable):
-                autils.var_len_seq_sort(debris_states)
-                raise NotImplementedError
-            else:
-                raise TypeError("debris_states must be torch.Tensor or Iterable")
             return distances
+        
+class vdPropagatorPlane(vdPropagator):
+    def __init__(self, max_n_debris: int, max_thrust: float, dt=0.1, orbit_rad=7e6, max_dist=1e3, safe_dist=5e1, view_dist=1e4, p_new_debris=0.001, gamma: float=None, device:str=None) -> None:
+        super().__init__(max_n_debris, max_thrust, dt, orbit_rad, max_dist, safe_dist, view_dist, p_new_debris, gamma, device)
+        self.state_mat = torch.tensor(
+            [[0,0,0,1,0,0],
+             [0,0,0,0,1,0],
+             [0,0,0,0,0,1],
+             [0,0,0,0,0,0],
+             [0,0,0,0,0,0],
+             [0,0,0,0,0,0]], dtype=torch.float32, device=device
+        )
+
+        self.trans_mat = torch.tensor(
+            [[1,0,0,dt,0,0],
+             [0,1,0,0,dt,0],
+             [0,0,1,0,0,dt],
+             [0,0,0,1,0,0],
+             [0,0,0,0,1,0],
+             [0,0,0,0,0,1]], dtype=torch.float32, device=device
+        )
+
+    def conVecs(self, actions: torch.Tensor, require_grad=False):
+        with torch.set_grad_enabled(require_grad):
+            thrust = actions*self.max_thrust
+            con_vecs = torch.zeros((thrust.shape[0], 6), dtype=torch.float32, device=thrust.device)
+            con_vecs[:, 3:] = thrust*self.dt
+            con_vecs[:, :3] = thrust*(self.dt**2)/2
+            return con_vecs
+        
+    def randomDebrisStates(self, n:int, old:torch.Tensor=None) -> torch.Tensor:
+        stateC = self.debris_stateC_dist.sample((n,))
+        states = stateC
+        states_0 = torch.zeros_like(stateC)
+        t2c = torch.zeros(n, device=self.device)
+        flags = torch.zeros(n, dtype=torch.bool, device=self.device,)
+        max_loop = 1000
+        for k in range(max_loop):
+            r = torch.norm(states[:,:3], dim=-1)
+            out = r>self.view_dist
+            _new = out & ~flags
+            states_0[_new] = states[_new]
+            t2c[_new] = k*self.dt
+            flags = out | flags
+            if flags.all():
+                break
+            states[:,:3] = states[:,:3] - self.dt*states[:,3:]
+        if old is not None:
+            states = torch.cat((old, states), dim=0)
+        return states

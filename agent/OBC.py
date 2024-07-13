@@ -38,13 +38,18 @@ class outputBoundConfig:
             y[:,i] = self.activations[i](x[:,i])
         return y
     
-    def uniSample(self, size:int):
+    def uniSample(self, size:int, indices=None):
         '''
             sample uniformally between output bounds.
         '''
-        if self.upper_bounds.isinf().any() or self.lower_bounds.isinf().any():
+        upper_bounds = self.upper_bounds
+        lower_bounds = self.lower_bounds
+        if indices is not None:
+            upper_bounds = upper_bounds[indices]
+            lower_bounds = lower_bounds[indices]
+        if upper_bounds.isinf().any() or lower_bounds.isinf().any():
             raise(ValueError("output bounds are not finite."))
-        return torch.rand(size, self.n_output).to(self.device)*torch.abs(self.upper_bounds-self.lower_bounds)+self.lower_bounds
+        return torch.rand(size, self.n_output).to(self.device)*torch.abs(upper_bounds-lower_bounds)+lower_bounds
 
     def to(self, device:str):
         self.upper_bounds = self.upper_bounds.to(device)

@@ -336,3 +336,52 @@ class QNet(fcNet):
         x = obs_action
         fc_out = self.fc_layers(x)
         return self.post_process(fc_out)
+    
+
+class dualNet(boundedFcNet):
+    def __init__(self, 
+                 n_feature: int, 
+                 n_output_action: int, 
+                 n_output_value: int, # =1
+                 n_hiddens: torch.List[int], 
+                 upper_bounds: torch.Tensor, 
+                 lower_bounds: torch.Tensor
+                ):
+        n_output = n_output_action + n_output_value
+        super().__init__(n_feature, n_output, n_hiddens, upper_bounds, lower_bounds)
+        self.n_output_action = n_output_action
+        self.n_output_value = n_output_value
+
+    def split_output(self, output):
+        '''
+            return action part and value part of dual net output.
+        '''
+        return output[:,:self.n_output_action], output[:,self.n_output_action:]
+    
+    def sample_action(self, output_a):
+        '''
+            sample action from output.
+        '''
+        return output_a
+    
+    def sample_value(self, output_v):
+        '''
+            sample value from output.
+        '''
+        return output_v
+    
+    def sample(self, output):
+        '''
+            sample action and value from output.
+        '''
+        output_a, output_v = self.split_output(output)
+        sample_a = self.sample_action(output_a)
+        sample_v = self.sample_value(output_v)
+        return sample_a, sample_v
+    
+    def clip(self, x:torch.Tensor):
+        '''
+            clip output to output bounds.
+        '''
+        x = x.clamp(self.obc.lower_bounds[:self.n_output_action], self.obc.upper_bounds[:self.n_output_action])
+        return x

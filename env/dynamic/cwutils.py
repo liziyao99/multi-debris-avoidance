@@ -114,23 +114,23 @@ def CW_rInv_batch_torch(a,
                         dt = 1.,
                         max_loop = 10000
                         ):
-    states_c = torch.zeros_like(forecast_states)
+    states_0 = torch.zeros_like(forecast_states)
     t2c = torch.zeros(forecast_states.shape[0], device=forecast_states.device)
     flags = torch.zeros(forecast_states.shape[0], dtype=torch.bool, device=forecast_states.device,)
     states = forecast_states
     Phi = matrix.CW_TransMat(dt, 0, a)
     Phi = torch.from_numpy(Phi).to(forecast_states.device)
     for k in range(max_loop):
-        r = torch.norm(states[:,:3]-states_c[:,:3], dim=-1)
+        r = torch.norm(states[:,:3], dim=-1)
         out = r>d2c
         _new = out & ~flags
-        states_c[_new] = states[_new]
+        states_0[_new] = states[_new]
         t2c[_new] = k*dt
         flags = (r>d2c) | flags
         if flags.all():
             break
         states = states@Phi.T
-    return states_c, t2c
+    return states_0, t2c
 
 
 def get_celestial_table(states0:torch.Tensor, a:float, dt:float, step:int,):
