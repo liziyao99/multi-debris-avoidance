@@ -86,42 +86,7 @@ def gym():
     # tr, cl ,al = gd.train(1, 10)
     tr, cl, al, apl = gs.train(1, 200)
 
-def alter():
-    from trainer.mpTrainer_ import mpH2TreeTrainer
-    import data.buffer
-    h1out_ub = [ 1000]*3 + [ 3.6]*3
-    h1out_lb = [-1000]*3 + [-3.6]*3
-    h2out_ub = [ 0.06]*3
-    h2out_lb = [-0.06]*3
-    agentArgs = {"h1a_hiddens": [1024]*6, 
-                "h2a_hiddens": [512]*8, 
-                "h1c_hiddens": [1024]*6,
-                "h1out_ub": h1out_ub, 
-                "h1out_lb": h1out_lb, 
-                "h2out_ub": h2out_ub, 
-                "h2out_lb": h2out_lb, }
-    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
-                "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
-    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
-    mt = mpH2TreeTrainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
-                    select_itr=1, select_size=1, batch_size=1024, main_device="cuda", mode="alter")
-    mt.debug()
 
-def sac():
-    from trainer.mpTrainer_ import mpH2TreeTrainer
-    import data.buffer
-    action_bounds = [1000, 1000, 1000, 3.6, 3.6, 3.6]
-    sigma_bounds=  [1e2]*6
-    agentArgs = {"actor_hiddens": [640]*14, 
-                "critic_hiddens": [640]*14,
-                "action_bounds": action_bounds,
-                "sigma_upper_bounds": sigma_bounds }
-    buffer_keys = ["states", "obss", "actions", "rewards", "next_states", "next_obss",
-                "dones", "Q_targets", "V_targets", "regret_mc", "terminal_rewards"]
-    buffer = data.buffer.replayBuffer(buffer_keys, capacity=10000, batch_size=640)
-    mt = mpH2TreeTrainer(n_process=16, buffer=buffer, n_debris=3, agentArgs=agentArgs, 
-                    select_itr=2, select_size=100, batch_size=1024, main_device="cuda", mode="SAC")
-    mt.debug()
 
 if __name__ == "__main__":
     import torch
@@ -139,37 +104,22 @@ if __name__ == "__main__":
     import data.dicts as D
 
     from agent.agent import lstmDDPG_V, dualLstmDDPG
-    # LD = lstmDDPG_V(main_obs_dim=6, 
-    #             sub_obs_dim=6, 
-    #             sub_feature_dim=32, 
-    #             lstm_num_layers=1, 
-    #             action_dim=3,
-    #             sigma=0.1,
-    #             gamma=gamma,
-    #             actor_hiddens=[512]*4, 
-    #             critic_hiddens=[512]*8,
-    #             action_upper_bounds=[ 1]*3, 
-    #             action_lower_bounds=[-1]*3,
-    #             actor_lr = 5e-5,
-    #             critic_lr = 5e-5,
-    #             partial_dim=None,
-    #             device=vdp.device)
-    LD = dualLstmDDPG(
-                main_obs_dim=6, 
+    LD = lstmDDPG_V(main_obs_dim=6, 
                 sub_obs_dim=6, 
                 sub_feature_dim=32, 
                 lstm_num_layers=1, 
                 action_dim=3,
                 sigma=0.1,
                 gamma=gamma,
-                dual_hiddens=[512]*4, 
+                actor_hiddens=[512]*4, 
+                critic_hiddens=[512]*4,
                 action_upper_bounds=[ 1]*3, 
                 action_lower_bounds=[-1]*3,
-                lr = 5e-5,
+                actor_lr = 5e-5,
+                critic_lr = 5e-5,
                 partial_dim=None,
-                device=vdp.device
-            )
-    # LD.load("../model/LD_V_2.ptd")
+                device=vdp.device)
+    LD.load("../model/LD_V_2.ptd")
 
     from data.buffer import replayBuffer
     buffer_keys = ["primal_states", "debris_states", "primal_obss", "debris_obss", "values"]
@@ -182,59 +132,11 @@ if __name__ == "__main__":
     n_step = 400
     update_n_step = 1
 
-    Np = 128
-    Nd = 1
+    Np = 1
+    Nd = 4
     total_rewards = []
     critic_loss = []
 
-    with Progress() as pbar:
-        task = pbar.add_task(total=n_episode, description="episode")
-        for episode in range(n_episode):
-            sp = vdp.randomPrimalStates(Np)
-            sd = vdp.randomDebrisStates(Nd)
-            op, od = vdp.getObss(sp, sd)
-            td_sim = dict(zip(buffer_keys, [[] for _ in buffer_keys]))
-            done_flags = torch.zeros(Np, dtype=torch.bool)
-            done_steps = (n_step-1)*torch.ones(Np, dtype=torch.int32)
-            Datas = []
-            Rewards = torch.zeros((n_step, Np))
-            for step in range(n_step):        
-                _, actions = LD.act(op, od)
-                (next_sp, next_sd), rewards, dones, (next_op, next_od) = vdp.propagate(sp, sd, actions,
-                                                                                    discard_leaving=False,
-                                                                                    new_debris=False)
-                data = (sp, torch.stack([sd]*Np, dim=0), op, od)
-                data = [d[~done_flags].detach().cpu() for d in data] + [None] # values
-                Datas.append(data)
-
-                if buffer.size > buffer.minimal_size:
-                    td_buffer = buffer.sample(stack=False)
-                    LD.update(td_buffer, vdp, n_step=update_n_step)
-
-                Rewards[step,...] = rewards.detach().cpu()
-                sp, sd, op, od = next_sp, next_sd, next_op, next_od
-                done_steps[dones.cpu()&~done_flags] = step
-                done_flags |= dones.cpu()
-                if done_flags.all():
-                    break
-
-            Values = torch.zeros((n_step, Np))
-            for step in range(n_step-1, -1, -1):
-                if (step>done_steps).all():
-                    continue
-                if step==n_step-1:
-                    Values[step, step==done_steps] = Rewards[step, step==done_steps] \
-                        + LD._critic(next_op[step==done_steps], next_od[step==done_steps]).detach().cpu().squeeze(dim=-1)*LD.gamma
-                else:
-                    Values[step, step==done_steps] = Rewards[step, step==done_steps]
-                    Values[step, step<done_steps] = Rewards[step, step<done_steps] + Values[step+1, step<done_steps]*LD.gamma
-                Datas[step][-1] = Values[step, step<=done_steps]
-            total_rewards.append(Rewards.sum(dim=0).mean().item())
-            for _data in Datas:
-                [td_sim[buffer_keys[i]].extend(_data[i]) for i in range(len(_data))]
-            dicts = D.split_dict(td_sim, update_batchsize)
-            for _dict in dicts:
-                cl, al, _ = LD.update(_dict, vdp, n_step=update_n_step)
-                critic_loss.append(cl)
-            buffer.from_dict(td_sim)
-            pbar.advance(task, 1)
+    sp = vdp.randomPrimalStates(Np)
+    sd = vdp.randomDebrisStates(Nd)
+    a = LD.tree_act(sp, sd, vdp, 10, 10)

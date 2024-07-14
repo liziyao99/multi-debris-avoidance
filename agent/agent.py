@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import agent.utils as autils
+from tree.searchTree import searchTree
 
 class rlAgent:
     def __init__(self,
@@ -62,6 +63,13 @@ class rlAgent:
         '''
         obs = obs.to(self.device)
         return self.actor.nominal_output(obs, require_grad=require_grad)
+    
+    def tree_act(self, state:torch.Tensor, prop):
+        if state.dim()==0:
+            state = state.unsqueeze(0)
+        if state.shape[0]>1:
+            raise ValueError("only support single observation")
+        raise NotImplementedError
 
     def update(self, trans_dict) -> typing.Tuple[float]:
         '''
@@ -1148,6 +1156,42 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
         obs = self.get_fc_input(main_obs, sub_seq, target=target)
         values = critic(obs)
         return values
+    
+    def tree_act(self, main_state:torch.Tensor, sub_state:torch.Tensor, prop, 
+                 search_step:int, search_population:int,
+                 max_gen=10, select_explore_eps=0.2):
+        if main_state.dim()==0:
+            main_state = main_state.unsqueeze(0)
+        if main_state.shape[0]>1:
+            raise ValueError("only support single observation")
+        state = (main_state, sub_state)
+        obs = prop.getObss(main_state, sub_state)
+        tree = searchTree.from_data(state, obs, max_gen=max_gen, gamma=self.gamma, select_explore_eps=select_explore_eps, device=self.device)
+        tree.root.V_critic = self._critic(obs[0], obs[1])
+        tree.backup()
+        for _ in range(search_step):
+            selected = tree.select(1, "value")[0]
+            parents = [selected]*search_population
+            main_state = selected.state[0]
+            main_states = torch.cat([main_state]*search_population, dim=0)
+            sub_state = selected.state[1]
+            main_obss, sub_obs = prop.getObss(main_states, sub_state)
+            _, actions = self.act(main_obss, sub_obs)
+            actions[1:,:] = self.actor.uniSample(search_population-1)
+            states, rewards, dones, obss = prop.propagate(main_states, sub_state, actions)
+            V_critics = self._critic(obss[0], obss[1])
+
+            states = list(states)
+            states[0] = states[0].unsqueeze(1)
+            states[1] = torch.stack([states[1]]*search_population, dim=0)
+            states = list(zip(*states))
+            obss = list(obss)
+            obss[0] = obss[0].unsqueeze(1)
+            obss = list(zip(*obss))
+            
+            tree.extend(states, obss, actions.unsqueeze(1), rewards.unsqueeze(1), dones.unsqueeze(1), V_critics.unsqueeze(1), parents=parents)
+            tree.backup()
+        return tree.best_action()
     
     def update(self, trans_dict, prop, n_step:int=1, n_update=10):
         main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
