@@ -4,6 +4,16 @@ import numpy as np
 def affine(x, s0, t0, s1, t1):
     return ((x-s0)*t1 + (t0-x)*s1)/(t0-s0)
 
+def powMean(x:torch.Tensor, p:float, dim=None, keepdim=False):
+    if (x<0).any():
+        raise ValueError("x should be non-negative.")
+    if p<=0:
+        raise ValueError("p should be positive.")
+    if dim is None:
+        return torch.mean(x**p)**(1/p)
+    else:
+        return torch.mean(x**p, dim=dim, keepdim=keepdim)**(1/p)
+
 def linspace(a:torch.Tensor, b:torch.Tensor, step:int, require_grad=False):
     if a.shape != b.shape:
         raise ValueError("a and b should have same shape.")

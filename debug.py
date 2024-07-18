@@ -137,6 +137,38 @@ if __name__ == "__main__":
     total_rewards = []
     critic_loss = []
 
+    collide = False
     sp = vdp.randomPrimalStates(Np)
     sd = vdp.randomDebrisStates(Nd)
-    a = LD.tree_act(sp, sd, vdp, 10, 10)
+    op, od = vdp.getObss(sp, sd)
+    td_sim = dict(zip(buffer_keys, [[] for _ in buffer_keys]))
+    done_flags = torch.zeros(Np, dtype=torch.bool)
+    done_steps = (n_step-1)*torch.ones(Np, dtype=torch.int32)
+    total_rewards = []
+    Datas = []
+    Actions = torch.zeros((n_step, Np, 3))
+    Rewards = torch.zeros((n_step, Np))
+    Critics = torch.zeros((n_step, Np))
+
+    LD.init_OU_noise(Np)
+    OU_noise = []
+    for step in range(n_step):
+        OU_noise.append(LD.OU_noise.detach().clone())
+        actions, _ = LD.act(op, od)
+        # actions = LD.tree_act(sp, sd, vdp, 40, 4, max_gen=20)
+        (next_sp, next_sd), rewards, dones, (next_op, next_od) = vdp.propagate(sp, sd, actions,
+                                                                            discard_leaving=True,
+                                                                            new_debris=True)
+        data = (sp, torch.stack([sd]*Np, dim=0), op, od)
+        data = [d[~done_flags].detach().cpu() for d in data] + [None] # values
+        Datas.append(data)
+
+        Rewards[step,...] = rewards.detach().cpu()
+        Critics[step,...] = LD._critic(op, od).detach().cpu()
+        Actions[step,...] = actions.detach().cpu()
+        sp, sd, op, od = next_sp, next_sd, next_op, next_od
+        done_steps[dones.cpu()&~done_flags] = step
+        done_flags |= dones.cpu()
+        if done_flags.all():
+            collide = True
+            break

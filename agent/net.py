@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import typing
 from agent.baseModule import baseModule
+from agent.module import *
+import utils
 
 from agent.OBC import outputBoundConfig_mp as outputBoundConfig
 
@@ -385,3 +387,212 @@ class dualNet(boundedFcNet):
         '''
         x = x.clamp(self.obc.lower_bounds[:self.n_output_action], self.obc.upper_bounds[:self.n_output_action])
         return x
+    
+class deepSet(baseModule):
+    def __init__(self, 
+                 n_feature: int, 
+                 n_fc0_output: int, 
+                 n_fc0_hiddens: typing.List[int], 
+                 n_fc1_output: int,
+                 n_fc1_hiddens: typing.List[int],
+                 upper_bounds: torch.Tensor=None, 
+                 lower_bounds: torch.Tensor=None):
+        '''
+            TODO: `obc`
+        '''
+        super().__init__()
+        self.n_feature = n_feature
+        self.n_fc0_output = n_fc0_output
+        self.n_fc1_output = n_fc1_output
+
+        fc = []
+        for i in range(len(n_fc0_hiddens)):
+            fc.append(nn.Linear(n_feature if i == 0 else n_fc0_hiddens[i-1], n_fc0_hiddens[i]))
+            fc.append(nn.ReLU())
+        fc.append(nn.Linear(n_fc0_hiddens[-1], n_fc0_output))
+        self.fc0 = nn.Sequential(*fc)
+
+        fc = []
+        for i in range(len(n_fc1_hiddens)):
+            fc.append(nn.Linear(n_fc0_output if i == 0 else n_fc1_hiddens[i-1], n_fc1_hiddens[i]))
+            fc.append(nn.ReLU())
+        fc.append(nn.Linear(n_fc1_hiddens[-1], n_fc1_output))
+        self.fc1 = nn.Sequential(*fc)
+
+    def forward(self, x):
+        '''
+            x shape: (batch_size, set_size, n_feature)
+        '''
+        y = self.fc0(x) # (batch_size, set_size, n_fc0_output)
+        y = torch.mean(y, dim=1) # (batch_size, n_fc0_output)
+        y = self.fc1(y) # (batch_size, n_fc1_output)
+        return y
+
+class multiLayerDeepSet(baseModule):
+    def __init__(self, 
+                 n_feature: int, 
+                 n_fc0_output: int, 
+                 n_fc0_hiddens: typing.List[int], 
+                 n_fc0_layers:int,
+                 n_fc1_output: int,
+                 n_fc1_hiddens: typing.List[int],
+                 upper_bounds: torch.Tensor=None, 
+                 lower_bounds: torch.Tensor=None):
+        '''
+            TODO: `obc`
+        '''
+        super().__init__()
+        self.n_feature = n_feature
+        self.n_fc0_output = n_fc0_output
+        self.n_fc0_layers = n_fc0_layers
+        self.n_fc1_output = n_fc1_output
+
+        self.FC0 = []
+        for j in range(n_fc0_layers):
+            fc = []
+            for i in range(len(n_fc0_hiddens)):
+                fc.append(nn.Linear(n_feature if i == 0 else n_fc0_hiddens[i-1], n_fc0_hiddens[i]))
+                fc.append(nn.ReLU())
+            fc.append(nn.Linear(n_fc0_hiddens[-1], n_fc0_output))
+            fc.append(nn.ReLU())
+            _module = nn.Sequential(*fc)
+            self.__setattr__(f"_fc0_{j}", _module)
+            self.FC0.append(_module)
+
+        fc = []
+        for i in range(len(n_fc1_hiddens)):
+            fc.append(nn.Linear(n_fc0_layers*n_fc0_output if i == 0 else n_fc1_hiddens[i-1], n_fc1_hiddens[i]))
+            fc.append(nn.ReLU())
+        fc.append(nn.Linear(n_fc1_hiddens[-1], n_fc1_output))
+        self.fc1 = nn.Sequential(*fc)
+
+    def forward(self, x:torch.Tensor):
+        '''
+            x shape: (batch_size, set_size, n_feature)
+        '''
+        batch_size, set_size, n_feature = x.shape
+        y = torch.zeros((batch_size, self.n_fc0_layers, set_size, self.n_fc0_output), device=self.device)
+        for j in range(self.n_fc0_layers):
+            y[:,j] = self.FC0[j](x)
+        y, _ = torch.max(y, dim=2) # (batch_size, n_fc0_layers, n_fc0_output)
+        y = y.view((batch_size, self.n_fc0_layers*self.n_fc0_output))
+        y = self.fc1(y) # (batch_size, n_fc1_output)
+        return y
+    
+class deepSet3(multiLayerDeepSet):
+    def __init__(self,
+                 n_feature: int,
+                 n_fc0_output: int,
+                 n_fc0_hiddens: typing.List[int],
+                 n_fc1_output: int,
+                 n_fc1_hiddens: typing.List[int],
+                 share_fc0=True,
+                 upper_bounds: torch.Tensor=None,
+                 lower_bounds: torch.Tensor=None,):
+        baseModule.__init__(self)
+        self.n_feature = n_feature
+        self.n_fc0_output = n_fc0_output
+        self.n_fc1_output = n_fc1_output
+        self._share_fc0 = share_fc0
+        if share_fc0:
+            self._n_fc0_layers = 1
+        else:
+            self._n_fc0_layers = 3
+        self.n_fc0_layers = 3
+
+        self.FC0 = []
+        for j in range(self._n_fc0_layers):
+            fc = []
+            for i in range(len(n_fc0_hiddens)):
+                fc.append(nn.Linear(n_feature if i == 0 else n_fc0_hiddens[i-1], n_fc0_hiddens[i]))
+                fc.append(nn.ReLU())
+            fc.append(nn.Linear(n_fc0_hiddens[-1], n_fc0_output))
+            _module = nn.Sequential(*fc)
+            self.__setattr__(f"_fc0_{j}", _module)
+            self.FC0.append(_module)
+
+        fc = []
+        for i in range(len(n_fc1_hiddens)):
+            fc.append(nn.Linear(self.n_fc0_layers*n_fc0_output if i == 0 else n_fc1_hiddens[i-1], n_fc1_hiddens[i]))
+            fc.append(nn.ReLU())
+        fc.append(nn.Linear(n_fc1_hiddens[-1], n_fc1_output))
+        self.fc1 = nn.Sequential(*fc)
+
+    def forward(self, x):
+        batch_size, set_size, n_feature = x.shape
+        y = torch.zeros((batch_size, self.n_fc0_layers, self.n_fc0_output), device=self.device)
+        if self._share_fc0:
+            z = self.FC0[0](x)
+            y[:,0] = torch.max(z, dim=-2)[0]
+            y[:,1] = torch.min(z, dim=-2)[0]
+            y[:,2] = torch.mean(z, dim=-2)
+        else:
+            y[:,0] = torch.max(self.FC0[0](x), dim=-2)[0]
+            y[:,1] = torch.min(self.FC0[1](x), dim=-2)[0]
+            y[:,2] = torch.mean(self.FC0[2](x), dim=-2)
+        y = y.view((batch_size, self.n_fc0_layers*self.n_fc0_output))
+        y = self.fc1(y) # (batch_size, n_fc1_output)
+        return y
+    
+class powDeepSet(multiLayerDeepSet):
+    '''
+        TODO: debug
+    '''
+    def __init__(self,
+                 n_feature: int,
+                 n_fc0_output: int,
+                 n_fc0_hiddens: typing.List[int],
+                 n_fc0_layers:int,
+                 fc0_pows:typing.List[int],
+                 n_fc1_output: int,
+                 n_fc1_hiddens: typing.List[int],
+                 share_fc0=True,
+                 upper_bounds: torch.Tensor=None,
+                 lower_bounds: torch.Tensor=None,):
+        if len(fc0_pows) != n_fc0_layers:
+            raise ValueError("length of fc0_pows must equal to n_fc0_layers")
+        baseModule.__init__(self)
+        self.n_feature = n_feature
+        self.n_fc0_output = n_fc0_output
+        self.n_fc1_output = n_fc1_output
+        self._share_fc0 = share_fc0
+        if share_fc0:
+            self._n_fc0_layers = 1
+        else:
+            self._n_fc0_layers = n_fc0_layers
+        self.n_fc0_layers = n_fc0_layers
+        self.fc0_pows = fc0_pows
+
+        self.FC0 = []
+        for j in range(self._n_fc0_layers):
+            fc = []
+            for i in range(len(n_fc0_hiddens)):
+                fc.append(nn.Linear(n_feature if i == 0 else n_fc0_hiddens[i-1], n_fc0_hiddens[i]))
+                fc.append(nn.ReLU())
+            fc.append(nn.Linear(n_fc0_hiddens[-1], n_fc0_output))
+            fc.append(nn.ReLU())
+            _module = nn.Sequential(*fc)
+            self.__setattr__(f"_fc0_{j}", _module)
+            self.FC0.append(_module)
+
+        fc = []
+        for i in range(len(n_fc1_hiddens)):
+            fc.append(nn.Linear(self.n_fc0_layers*n_fc0_output if i == 0 else n_fc1_hiddens[i-1], n_fc1_hiddens[i]))
+            fc.append(nn.ReLU())
+        fc.append(nn.Linear(n_fc1_hiddens[-1], n_fc1_output))
+        self.fc1 = nn.Sequential(*fc)
+
+    def forward(self, x):
+        batch_size, set_size, n_feature = x.shape
+        y = torch.zeros((batch_size, self.n_fc0_layers, self.n_fc0_output), device=self.device)
+        if self._share_fc0:
+            z = self.FC0[0](x)
+            for i in range(self.n_fc0_layers):
+                y[:,i] = utils.powMean(z, p=self.fc0_pows[i], dim=-2)
+        else:
+            for i in range(self.n_fc0_layers):
+                y[:,i] = utils.powMean(self.FC0[i](x), p=self.fc0_pows[i], dim=-2)
+        y = y.view((batch_size, self.n_fc0_layers*self.n_fc0_output))
+        y = self.fc1(y) # (batch_size, n_fc1_output)
+        return y
+    

@@ -56,7 +56,7 @@ class vdPropagator:
             scale=self._ps0_scale)
         
         self._dsC_scale = torch.zeros(6, device=device)
-        self._dsC_scale[:3] = self.max_dist/10
+        self._dsC_scale[:3] = self.max_dist/2
         self._dsC_scale[3:] = self.max_dist/10
         self.debris_stateC_dist = torch.distributions.Normal(
             loc=torch.zeros_like(self._dsC_scale),
@@ -66,6 +66,7 @@ class vdPropagator:
         self.collision_reward = -2.
         self.area_reward = 1.
         self.beta_action = 1/self.max_dist
+        self.beta_vel = 1/self.max_dist
         
     def randomPrimalStates(self, n:int) -> torch.Tensor:
         return self.primal_state0_dist.sample((n,))
@@ -94,10 +95,9 @@ class vdPropagator:
         if discard_leaving:
             next_debris_states = self.discard_leaving(next_debris_states)
         if new_debris:
-            n_debris = next_debris_states.shape[0]
-            if n_debris==0:
+            if next_debris_states.shape[0]==0:
                 next_debris_states = self.randomDebrisStates(1, old=next_debris_states)
-            while n_debris<self.max_n_debris and np.random.rand()<self.p_new_debris:
+            while next_debris_states.shape[0]<self.max_n_debris and np.random.rand()<self.p_new_debris:
                 next_debris_states = self.randomDebrisStates(1, old=next_debris_states)
         next_primal_obss, next_debris_obss = self.getObss(primal_states, debris_states, batch_debris_obss=batch_debris_obss, require_grad=require_grad)
         return (next_primal_states, next_debris_states), rewards, dones, (next_primal_obss, next_debris_obss)
@@ -170,7 +170,7 @@ class vdPropagator:
             area_rewards = 1 - d2o/self.max_dist
 
             vel = primal_states[:,3:].norm(dim=-1)
-            vel_rewards = -vel/20
+            vel_rewards = -vel*self.beta_vel
 
             rewards = collision_rewards + fuel_rewards + area_rewards + vel_rewards
             if self.gamma is not None:
@@ -265,7 +265,10 @@ class vdPropagatorPlane(vdPropagator):
             return con_vecs
         
     def randomDebrisStates(self, n:int, old:torch.Tensor=None) -> torch.Tensor:
+        p_pertinence = 0.5
         stateC = self.debris_stateC_dist.sample((n,))
+        if np.random.rand()<p_pertinence:
+            stateC[:,:3] = self.primal_state0_dist.sample((n,))[:,:3]
         states = stateC
         states_0 = torch.zeros_like(stateC)
         t2c = torch.zeros(n, device=self.device)
