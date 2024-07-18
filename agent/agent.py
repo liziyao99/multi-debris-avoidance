@@ -878,6 +878,8 @@ class DDPG(boundedRlAgent):
             param_target.data.copy_(param_target.data*(1.0-self.tau) + param.data*self.tau)
 
     def update(self, trans_dict):
+        _OU = self._OU
+        self._OU = False
         trans_dict = D.torch_dict(trans_dict, device=self.device)
         rewards = trans_dict["rewards"].reshape((-1, 1))
         dones = trans_dict["dones"].reshape((-1, 1))
@@ -897,6 +899,7 @@ class DDPG(boundedRlAgent):
 
         self.soft_update(self.actor, self.target_actor)
         self.soft_update(self.critic, self.target_critic)
+        self._OU = _OU
 
         return critic_loss.item(), actor_loss.item()
     
@@ -947,6 +950,8 @@ class DDPG_V(DDPG):
         self.modules += [self.critic, self.target_critic]
 
     def update(self, trans_dict, prop, step:int=10):
+        _OU = self._OU
+        self._OU = False
         trans_dict = D.torch_dict(trans_dict, device=self.device)
         # rewards = trans_dict["rewards"].reshape((-1, 1))
         # dones = trans_dict["dones"].reshape((-1, 1))
@@ -973,6 +978,7 @@ class DDPG_V(DDPG):
 
         self.soft_update(self.actor, self.target_actor)
         self.soft_update(self.critic, self.target_critic)
+        self._OU = _OU
 
         return critic_loss.item(), actor_loss.item()
 
@@ -1091,6 +1097,8 @@ class lstmDDPG(DDPG):
         return q_values
     
     def update(self, trans_dict, n_update=1):
+        _OU = self._OU
+        self._OU = False
         rewards = torch.stack(trans_dict["rewards"]).reshape((-1, 1)).to(self.device)
         dones = torch.stack(trans_dict["dones"]).reshape((-1, 1)).to(self.device)
         main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
@@ -1129,6 +1137,7 @@ class lstmDDPG(DDPG):
         self.soft_update(self.actor, self.target_actor)
         self.soft_update(self.critic, self.target_critic)
         self.soft_update(self.lstm, self.target_lstm)
+        self._OU = _OU
 
         return critic_loss, actor_loss, partial_loss
     
@@ -1226,6 +1235,8 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
             Model Predictive Control.
             returns: `actions`, `actor_loss.item()`.
         '''
+        _OU = self._OU
+        self._OU = False
         batch_size = sp0.shape[0]
         if horizon>0:
             for _ in range(opt_step):
@@ -1261,9 +1272,13 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
             actor_loss = None
         op, od = prop.getObss(sp0, sd0, batch_debris_obss=True)
         actions, _ = self.act(op, od, permute=False, with_OU_noise=False)
+        self._OU = _OU
         return actions, actor_loss
     
     def update(self, trans_dict, prop, horizon:int=1, n_update=10):
+        _OU = self._OU
+        self._OU = False
+
         main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
         sub_obss = trans_dict["debris_obss"]
         target_values = torch.stack(trans_dict["values"]).to(self.device).reshape((-1,1))
@@ -1298,6 +1313,8 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
         self.soft_update(self.actor, self.target_actor)
         self.soft_update(self.critic, self.target_critic)
         self.soft_update(self.lstm, self.target_lstm)
+
+        self._OU = _OU
 
         return critic_loss, actor_loss, partial_loss
     

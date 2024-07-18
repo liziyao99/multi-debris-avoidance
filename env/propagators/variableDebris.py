@@ -63,7 +63,7 @@ class vdPropagator:
             scale=self._dsC_scale)
         
         self.max_thrust = max_thrust
-        self.collision_reward = -2.
+        self.collision_reward = -1.
         self.area_reward = 1.
         self.beta_action = 1/self.max_dist
         self.beta_vel = 1/self.max_dist
@@ -277,6 +277,32 @@ class vdPropagatorPlane(vdPropagator):
         for k in range(max_loop):
             r = torch.norm(states[:,:3], dim=-1)
             out = r>self.view_dist
+            _new = out & ~flags
+            states_0[_new] = states[_new]
+            t2c[_new] = k*self.dt
+            flags = out | flags
+            if flags.all():
+                break
+            states[:,:3] = states[:,:3] - self.dt*states[:,3:]
+        if old is not None:
+            states = torch.cat((old, states), dim=0)
+        return states
+    
+    def randomDebrisStatesTime(self, n:int, old:torch.Tensor=None) -> torch.Tensor:
+        p_pertinence = 0.5
+        stateC = self.debris_stateC_dist.sample((n,))
+        if np.random.rand()<p_pertinence:
+            stateC[:,:3] = self.primal_state0_dist.sample((n,))[:,:3]
+        states = stateC
+        states_0 = torch.zeros_like(stateC)
+        t2c = torch.zeros(n, device=self.device)
+        step_span = torch.tensor([10, 100], device=self.device).float()
+        step_dist = torch.distributions.Uniform(step_span[0], step_span[1])
+        arrive_step = step_dist.sample((n,))
+        flags = torch.zeros(n, dtype=torch.bool, device=self.device,)
+        max_loop = 1000
+        for k in range(max_loop):
+            out = arrive_step<=k
             _new = out & ~flags
             states_0[_new] = states[_new]
             t2c[_new] = k*self.dt
