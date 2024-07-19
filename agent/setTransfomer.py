@@ -110,7 +110,7 @@ class setTransformer(baseModule):
             pma = PMA(n_feature, pma_fc_hiddens, final_fc_features, num_heads, pma_mab_fc_hiddens, n_seed=n_seed, flat_seed=flat_seed)
             ffc = []
             for i in range(len(final_fc_hiddens)):
-                ffc.append(nn.Linear(final_fc_features if i == 0 else final_fc_hiddens[i-1], final_fc_hiddens[i]))
+                ffc.append(nn.Linear(final_fc_features*n_seed if i == 0 else final_fc_hiddens[i-1], final_fc_hiddens[i]))
                 ffc.append(nn.ReLU())
             ffc.append(nn.Linear(final_fc_hiddens[-1], n_output))
             self.decoder = nn.Sequential(pma, *ffc)
