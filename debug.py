@@ -89,86 +89,43 @@ def gym():
 
 
 if __name__ == "__main__":
-    import torch
     import numpy as np
+    import torch
     import matplotlib.pyplot as plt
-
-    gamma = 0.99
-
-    from env.propagators.variableDebris import vdPropagator
-    vdp = vdPropagator(10, 0.06, dt=0.3, device="cuda", safe_dist=100, p_new_debris=1e-3, gamma=gamma)
-    vdp.collision_reward = -1.
-
+    from agent.setTransfomer import setTransformer
     from torch.utils.tensorboard import SummaryWriter
-    from env.dynamic import cwutils
-    import data.dicts as D
 
-    from agent.agent import lstmDDPG_V, dualLstmDDPG
-    LD = lstmDDPG_V(main_obs_dim=6, 
-                sub_obs_dim=6, 
-                sub_feature_dim=32, 
-                lstm_num_layers=1, 
-                action_dim=3,
-                sigma=0.1,
-                gamma=gamma,
-                actor_hiddens=[512]*4, 
-                critic_hiddens=[512]*4,
-                action_upper_bounds=[ 1]*3, 
-                action_lower_bounds=[-1]*3,
-                actor_lr = 5e-5,
-                critic_lr = 5e-5,
-                partial_dim=None,
-                device=vdp.device)
-    LD.load("../model/LD_V_2.ptd")
+    st = setTransformer(n_feature=6, num_heads=3, encoder_fc_hiddens=[128], encoder_depth=1, 
+                        n_output=48, pma_fc_hiddens=[128], pma_mab_fc_hiddens=[128], 
+                        mhAtt_dropout=0.2, fc_dropout=0.5).to("cuda")
+    linear = torch.nn.Linear(48, 3).to("cuda")
+    model = torch.nn.Sequential(st, linear)
+    opt = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    from data.buffer import replayBuffer
-    buffer_keys = ["primal_states", "debris_states", "primal_obss", "debris_obss", "values"]
-    update_batchsize = 4096
-    buffer = replayBuffer(buffer_keys, capacity=100000, minimal_size=2*update_batchsize, batch_size=update_batchsize)
+    from utils import lineProj, dotEachRow
+    from env.propagators.variableDebris import vdPropagator, vdPropagatorPlane
+    # vdp = vdPropagator(10, 0.06, dt=0.3, device="cuda", safe_dist=100, p_new_debris=1e-3, gamma=None)
+    vdp = vdPropagatorPlane(10, 0.06, dt=0.3, device="cuda", safe_dist=100, p_new_debris=5e-2, gamma=None)
 
-    from rich.progress import Progress
-    n_epoch = 1
-    n_episode = 1
-    n_step = 400
-    update_n_step = 1
-
-    Np = 1
-    Nd = 4
-    total_rewards = []
-    critic_loss = []
-
-    collide = False
-    sp = vdp.randomPrimalStates(Np)
-    sd = vdp.randomDebrisStates(Nd)
-    op, od = vdp.getObss(sp, sd)
-    td_sim = dict(zip(buffer_keys, [[] for _ in buffer_keys]))
-    done_flags = torch.zeros(Np, dtype=torch.bool)
-    done_steps = (n_step-1)*torch.ones(Np, dtype=torch.int32)
-    total_rewards = []
-    Datas = []
-    Actions = torch.zeros((n_step, Np, 3))
-    Rewards = torch.zeros((n_step, Np))
-    Critics = torch.zeros((n_step, Np))
-
-    LD.init_OU_noise(Np)
-    OU_noise = []
-    for step in range(n_step):
-        OU_noise.append(LD.OU_noise.detach().clone())
-        actions, _ = LD.act(op, od)
-        # actions = LD.tree_act(sp, sd, vdp, 40, 4, max_gen=20)
-        (next_sp, next_sd), rewards, dones, (next_op, next_od) = vdp.propagate(sp, sd, actions,
-                                                                            discard_leaving=True,
-                                                                            new_debris=True)
-        data = (sp, torch.stack([sd]*Np, dim=0), op, od)
-        data = [d[~done_flags].detach().cpu() for d in data] + [None] # values
-        Datas.append(data)
-
-        Rewards[step,...] = rewards.detach().cpu()
-        Critics[step,...] = LD._critic(op, od).detach().cpu()
-        Actions[step,...] = actions.detach().cpu()
-        sp, sd, op, od = next_sp, next_sd, next_op, next_od
-        done_steps[dones.cpu()&~done_flags] = step
-        done_flags |= dones.cpu()
-        if done_flags.all():
-            collide = True
-            break
+    def _gen_data(batch_size=1024, n_debris=None):
+        if n_debris is None:
+            n_debris = np.random.randint(1, vdp.max_n_debris+1)
+        sp = vdp.randomPrimalStates(batch_size)
+        sd = vdp.randomDebrisStatesTime(n_debris)
+        op, od = vdp.getObss(sp, sd)
+        pos = od[:,:,:3]
+        vel = od[:,:,3:]
+        dr = dotEachRow(pos, vel)
+        _, closet_approach = lineProj(torch.zeros_like(pos), pos, vel)
+        closet_dist = closet_approach.norm(dim=-1) # (batch_size, n_debris)
+        closet_dist = torch.where(dr<0, closet_dist, torch.inf)
+        _, min_idx = closet_dist.min(dim=1)
+        data = od
+        label = torch.zeros((batch_size, 3), device=vdp.device)
+        for i in range(batch_size):
+            label[i,...] = closet_approach[i, min_idx[i],:]
+        return data, label
+    
+    test_data, test_label = _gen_data(10000, 1)
+    print([(test_data[:,:,i]>0).float().mean().item() for i in range(6)])
+    print([(test_label[:,i]>0).float().mean().item() for i in range(3)])

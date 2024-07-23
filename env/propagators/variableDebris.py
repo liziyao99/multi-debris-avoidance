@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 import typing
 from env.dynamic import matrix
-from utils import lineProj
+from utils import lineProj, penaltyFuncPosi, dotEachRow
 from env.dynamic import cwutils
 import agent.utils as autils
 
@@ -126,7 +126,7 @@ class vdPropagator:
             next_states = states@self.trans_mat.T
             return next_states
     
-    def getObss(self, primal_states:torch.Tensor, debris_states:torch.Tensor, batch_debris_obss=True, require_grad=False):
+    def _getObss(self, primal_states:torch.Tensor, debris_states:torch.Tensor, batch_debris_obss=True, require_grad=False):
         '''
             args:
                 `primal_states`: shape: (n_primal, 6)
@@ -148,6 +148,35 @@ class vdPropagator:
             debris_obss = rel_states*self._obs_zoom.unsqueeze(dim=0)
             return primal_obss, debris_obss
         
+    def getObss(self, primal_states:torch.Tensor, debris_states:torch.Tensor, batch_debris_obss=True, require_grad=False):
+        '''
+            returns:
+                `primal_obss`: shape: (n_primal, 20)
+                `debris_obss`: shape: (n_primal, n_debris, 9)
+        '''
+        n_primal = primal_states.shape[0]
+        n_debris = debris_states.shape[0]
+        obs_noise = self.obs_noise_dist.sample((n_debris,))
+        debris_states = debris_states + obs_noise
+        rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)
+        rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
+        distance = rel_pos.norm(dim=-1)/self.max_dist # shape: (n_primal, n_debris)
+        min_distance, min_distance_idx = distance.min(dim=-1, keepdim=True) # shape: (n_primal, 1)
+        min_approach, min_approach_idx, (sin_theta, cos_theta) = self.closet_approach(primal_states, debris_states, require_grad=require_grad)
+        # shape: (n_primal, 1), (n_primal, n_debris, 1)
+        md_debris_states = debris_states[min_distance_idx.squeeze(dim=-1)] # shape: (n_primal, 6)
+        ma_debris_states = debris_states[min_approach_idx.squeeze(dim=-1)] # shape: (n_primal, 6)
+        md_debris_obss = md_debris_states*self._obs_zoom
+        ma_debris_obss = ma_debris_states*self._obs_zoom
+        min_distance, min_approach = min_distance/self.max_dist, min_approach/self.max_dist
+
+        base_primal_obss = primal_states*self._obs_zoom # shape: (n_primal, 6)
+        base_debris_obss = rel_states*self._obs_zoom.unsqueeze(dim=0) # shape: (n_primal, n_debris, 6)
+        primal_obss = torch.cat((base_primal_obss, md_debris_obss, min_distance, ma_debris_obss, min_approach), dim=-1) # shape: (n_primal, 20)
+        debris_obss = torch.cat((base_debris_obss, distance.unsqueeze(-1), sin_theta, cos_theta), dim=-1) # shape (n_primal, n_debris, 9)
+
+        return primal_obss, debris_obss
+        
     def getRewards(self, primal_states:torch.Tensor, debris_states:torch.Tensor, actions:torch.Tensor, require_grad=False) -> torch.Tensor:
         '''
             args:
@@ -158,9 +187,41 @@ class vdPropagator:
                 `rewards`: shape: (n_primal,)
         '''
         with torch.set_grad_enabled(require_grad):
-            distances = self.distances(primal_states, debris_states)
+            distances = self.distances(primal_states, debris_states, require_grad=require_grad)
             any_collision = (distances<self.safe_dist).any(dim=-1)
             collision_rewards = any_collision.float()*self.collision_reward
+
+            fuel_rewards = (1-actions.norm(dim=-1))*self.beta_action
+
+            d2o = primal_states[:,:3].norm(dim=-1)
+            in_area = d2o<self.max_dist
+            # area_rewards = self.area_reward*torch.where(in_area, 1-d2o/self.max_dist, self.collision_reward*torch.ones_like(d2o))
+            area_rewards = 1 - d2o/self.max_dist
+
+            vel = primal_states[:,3:].norm(dim=-1)
+            vel_rewards = -vel*self.beta_vel
+
+            rewards = collision_rewards + fuel_rewards + area_rewards + vel_rewards
+            if self.gamma is not None:
+                if self.gamma>=1 or self.gamma<0:
+                    raise ValueError("Invalid gamma")
+                rewards = rewards*(1-self.gamma)
+            return rewards
+        
+    def getSmoothRewards(self, primal_states:torch.Tensor, debris_states:torch.Tensor, actions:torch.Tensor, require_grad=False) -> torch.Tensor:
+        '''
+            args:
+                `primal_states`: shape: (n_primal, 6)
+                `debris_states`: shape: (n_debris, 6)
+                `actions`: shape: (n_primal, 3)
+            returns:
+                `rewards`: shape: (n_primal,)
+        '''
+        with torch.set_grad_enabled(require_grad):
+            distances = self.distances(primal_states, debris_states, require_grad=require_grad)
+            rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)            
+            rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
+            collision_rewards = penaltyFuncPosi(distances, 1/self.safe_dist)*abs(self.collision_reward)
 
             fuel_rewards = (1-actions.norm(dim=-1))*self.beta_action
 
@@ -188,7 +249,7 @@ class vdPropagator:
                 `dones`: shape: (n_primal,)
         '''
         with torch.set_grad_enabled(require_grad):
-            distances = self.distances(primal_states, debris_states)
+            distances = self.distances(primal_states, debris_states, require_grad=require_grad)
             dones_collide = (distances<self.safe_dist).any(dim=-1)
             d2o = primal_states[:,:3].norm(dim=-1)
             dones_out = d2o>self.max_dist
@@ -218,7 +279,7 @@ class vdPropagator:
             leaving = (dot>0) & (dist>self.max_dist)
             return leaving
         
-    def distances(self, primal_states:torch.Tensor, debris_states:torch.Tensor) -> torch.Tensor:
+    def distances(self, primal_states:torch.Tensor, debris_states:torch.Tensor, require_grad=False) -> torch.Tensor:
         '''
             args:
                 `primal_states`: shape: (n_primal, 6)
@@ -226,7 +287,7 @@ class vdPropagator:
             returns:
                 `distances`: shape: (n_primal, n_debris)
         '''
-        with torch.no_grad():
+        with torch.set_grad_enabled(require_grad):
             if isinstance(debris_states, torch.Tensor):
                 primal_pos = primal_states[:, :3]
                 debris_pos = debris_states[:, :3]
@@ -234,6 +295,27 @@ class vdPropagator:
                 debris_pos = debris_pos.unsqueeze(dim=0)
                 distances = torch.norm(primal_pos-debris_pos, dim=-1) # shape: (n_primal, n_debris)
             return distances
+        
+    def closet_approach(self, primal_states:torch.Tensor, debris_states:torch.Tensor, require_grad=False) -> torch.Tensor:
+        '''
+            args:
+                `primal_states`: shape: (n_primal, 6)
+                `debris_states`: shape: (n_debris, 6)
+            returns:
+                `min_dist`: shape: (n_primal, 1)
+                `min_idx`: shape: (n_primal, 1)
+                `(sin_theta, cos_theta)`: shape: (n_primal, n_debris, 1)
+        '''
+        with torch.set_grad_enabled(require_grad):
+            rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1)
+            rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
+            rpn, rvn = rel_pos.norm(dim=-1, keepdim=True), rel_vel.norm(dim=-1, keepdim=True) # shape: (n_primal, n_debris, 1)
+            rpd, rvd = rel_pos/rpn, rel_vel/rvn # shape: (n_primal, n_debris, 3)
+            cos_theta = dotEachRow(rpd, rvd, keepdim=True) # shape: (n_primal, n_debris, 1)
+            sin_theta = torch.sqrt(1-cos_theta**2)
+            closet_dist = rel_pos.norm(dim=-1)*sin_theta.squeeze(-1) # shape: (n_primal, n_debris)
+            min_dist, min_idx = closet_dist.min(dim=1, keepdim=True)
+            return min_dist, min_idx, (sin_theta, cos_theta)
         
 class vdPropagatorPlane(vdPropagator):
     def __init__(self, max_n_debris: int, max_thrust: float, dt=0.1, orbit_rad=7e6, max_dist=1e3, safe_dist=5e1, view_dist=1e4, p_new_debris=0.001, gamma: float=None, device:str=None) -> None:
