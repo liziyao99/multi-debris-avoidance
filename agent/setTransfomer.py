@@ -131,7 +131,7 @@ class setTransformer(baseModule):
             pma = PMA(n_feature, pma_fc_hiddens, int(final_fc_features/n_seed), num_heads, pma_mab_fc_hiddens, mhAtt_dropout=mhAtt_dropout, fc_dropout=fc_dropout, n_seed=n_seed, flat_seed=flat_seed)
             ffc = []
             for i in range(len(final_fc_hiddens)):
-                ffc.append(nn.Linear(final_fc_features if i == 0 else final_fc_hiddens[i-1], final_fc_hiddens[i]))
+                ffc.append(nn.Linear(final_fc_features*n_seed if i == 0 else final_fc_hiddens[i-1], final_fc_hiddens[i]))
                 ffc.append(nn.ReLU())
                 ffc.append(nn.Dropout(fc_dropout))
             ffc.append(nn.Linear(final_fc_hiddens[-1], n_output))
