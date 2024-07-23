@@ -6,6 +6,7 @@ import typing
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
 import agent.utils as autils
 from tree.searchTree import searchTree
 
@@ -1235,6 +1236,16 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
             Model Predictive Control.
             returns: `actions`, `actor_loss.item()`.
         '''
+
+        def debug_nanGrad(x:torch.Tensor=None):
+            if x is not None and x.grad_fn is not None:
+                self.actor_opt.zero_grad()
+                x.mean().backward()
+            for name, param in self.actor.named_parameters():
+                if param.grad is not None and param.grad.isnan().any():
+                    raise ValueError("nan actor grad")
+            self.actor_opt.zero_grad()
+
         _OU = self._OU
         self._OU = False
         batch_size = sp0.shape[0]
@@ -1248,7 +1259,7 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
                 sp, sd = sp0.clone(), sd0.clone()
                 op, od = prop.getObss(sp, sd, batch_debris_obss=True)
                 for i in range(horizon):
-                    _, actions = self.act(op, od, permute=False, with_OU_noise=False)
+                    _, actions = self.act(op.detach(), od.detach(), permute=False, with_OU_noise=False)
                     (sp, sd), rewards, dones, (op, od) = prop.propagate(sp, sd, actions, new_debris=True, batch_debris_obss=True, require_grad=True)
                     Rewards[i, ~done_flags] = rewards[~done_flags]
                     now_done = dones&~done_flags
@@ -1263,9 +1274,12 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
                     disct_flags = i< truncated_steps
                     Values[i, trunc_flags] = Rewards[i, trunc_flags] + self.gamma*truncated_values[trunc_flags]
                     Values[i, disct_flags] = Rewards[i, disct_flags] + self.gamma*Values[i, disct_flags]
-                actor_loss = -Values[0].mean()
+                # actor_loss = -Values[0].mean()
+                actor_loss = op[:, :3].mean()
+                # actor_loss = od[:,:,:3].mean()
                 self.actor_opt.zero_grad()
                 actor_loss.backward()
+                debug_nanGrad()
                 self.actor_opt.step()
             actor_loss = actor_loss.item()
         else:

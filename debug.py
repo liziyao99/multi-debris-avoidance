@@ -132,7 +132,7 @@ def setTransTest():
     from rich.progress import Progress
     import numpy as np
     n_epoch = 1
-    n_episode = 200
+    n_episode = 1
     n_step = 1200
     mpc_horizon = 2
 
@@ -195,8 +195,6 @@ def setTransTest():
                     Values[step, step==done_steps] = Rewards[step, step==done_steps]
                     Values[step, step< done_steps] = Rewards[step, step< done_steps] + Values[step+1, step<done_steps]*LD.gamma
                 Datas[step][-1] = Values[step, step<=done_steps]
-                if torch.isnan(Values).any():
-                    print("nan value")
             total_rewards.append(Rewards.sum(dim=0).mean().item())
             for _data in Datas:
                 [td_sim[buffer_keys[i]].extend(_data[i]) for i in range(len(_data))]

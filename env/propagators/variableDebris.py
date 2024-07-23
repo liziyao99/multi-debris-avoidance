@@ -35,6 +35,7 @@ class vdPropagator:
         state_mat = matrix.CW_StateMat(orbit_rad)
         self.state_mat = torch.from_numpy(state_mat).float().to(device)
 
+        self._with_obs_noise = True
         self._obs_noise = torch.zeros(6, device=device)
         self._obs_noise[:3] = 1e1
         self._obs_noise[3:] = 1e-1
@@ -99,7 +100,7 @@ class vdPropagator:
                 next_debris_states = self.randomDebrisStates(1, old=next_debris_states)
             while next_debris_states.shape[0]<self.max_n_debris and np.random.rand()<self.p_new_debris:
                 next_debris_states = self.randomDebrisStates(1, old=next_debris_states)
-        next_primal_obss, next_debris_obss = self.getObss(primal_states, debris_states, batch_debris_obss=batch_debris_obss, require_grad=require_grad)
+        next_primal_obss, next_debris_obss = self.getObss(next_primal_states, next_debris_states, batch_debris_obss=batch_debris_obss, require_grad=require_grad)
         return (next_primal_states, next_debris_states), rewards, dones, (next_primal_obss, next_debris_obss)
 
     def getNextStates(self, primal_states:torch.Tensor, debris_states:torch.Tensor, actions:torch.Tensor, require_grad=False):
@@ -139,7 +140,8 @@ class vdPropagator:
             n_primal = primal_states.shape[0]
             n_debris = debris_states.shape[0]
             obs_noise = self.obs_noise_dist.sample((n_debris,))
-            debris_states = debris_states + obs_noise
+            if self._with_obs_noise:
+                debris_states = debris_states + obs_noise
             rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)
             primal_obss = primal_states*self._obs_zoom
             # debris_obss = debris_states*self._obs_zoom
@@ -157,7 +159,8 @@ class vdPropagator:
         n_primal = primal_states.shape[0]
         n_debris = debris_states.shape[0]
         obs_noise = self.obs_noise_dist.sample((n_debris,))
-        debris_states = debris_states + obs_noise
+        if self._with_obs_noise:
+            debris_states = debris_states + obs_noise
         rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)
         rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
         distance = rel_pos.norm(dim=-1)/self.max_dist # shape: (n_primal, n_debris)
@@ -312,7 +315,7 @@ class vdPropagator:
             rpn, rvn = rel_pos.norm(dim=-1, keepdim=True), rel_vel.norm(dim=-1, keepdim=True) # shape: (n_primal, n_debris, 1)
             rpd, rvd = rel_pos/rpn, rel_vel/rvn # shape: (n_primal, n_debris, 3)
             cos_theta = dotEachRow(rpd, rvd, keepdim=True) # shape: (n_primal, n_debris, 1)
-            sin_theta = torch.sqrt(1-cos_theta**2)
+            sin_theta = torch.sqrt(1-torch.clip(cos_theta**2, max=1.)+1e-10) # in case sqrt(0), which lead to grad nan.
             closet_dist = rel_pos.norm(dim=-1)*sin_theta.squeeze(-1) # shape: (n_primal, n_debris)
             min_dist, min_idx = closet_dist.min(dim=1, keepdim=True)
             return min_dist, min_idx, (sin_theta, cos_theta)
