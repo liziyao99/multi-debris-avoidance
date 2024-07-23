@@ -86,46 +86,146 @@ def gym():
     # tr, cl ,al = gd.train(1, 10)
     tr, cl, al, apl = gs.train(1, 200)
 
-
-
-if __name__ == "__main__":
-    import numpy as np
+def setTransTest():
     import torch
+    import numpy as np
     import matplotlib.pyplot as plt
-    from agent.setTransfomer import setTransformer
-    from torch.utils.tensorboard import SummaryWriter
 
-    st = setTransformer(n_feature=6, num_heads=3, encoder_fc_hiddens=[128], encoder_depth=1, 
-                        n_output=48, pma_fc_hiddens=[128], pma_mab_fc_hiddens=[128], 
-                        mhAtt_dropout=0.2, fc_dropout=0.5).to("cuda")
-    linear = torch.nn.Linear(48, 3).to("cuda")
-    model = torch.nn.Sequential(st, linear)
-    opt = torch.optim.Adam(model.parameters(), lr=0.001)
+    gamma = 0.99
 
-    from utils import lineProj, dotEachRow
     from env.propagators.variableDebris import vdPropagator, vdPropagatorPlane
     # vdp = vdPropagator(10, 0.06, dt=0.3, device="cuda", safe_dist=100, p_new_debris=1e-3, gamma=None)
     vdp = vdPropagatorPlane(10, 0.06, dt=0.3, device="cuda", safe_dist=100, p_new_debris=5e-2, gamma=None)
+    vdp.collision_reward = -1.
+    vdp.beta_action = 1/vdp.max_dist
 
-    def _gen_data(batch_size=1024, n_debris=None):
-        if n_debris is None:
-            n_debris = np.random.randint(1, vdp.max_n_debris+1)
-        sp = vdp.randomPrimalStates(batch_size)
-        sd = vdp.randomDebrisStatesTime(n_debris)
-        op, od = vdp.getObss(sp, sd)
-        pos = od[:,:,:3]
-        vel = od[:,:,3:]
-        dr = dotEachRow(pos, vel)
-        _, closet_approach = lineProj(torch.zeros_like(pos), pos, vel)
-        closet_dist = closet_approach.norm(dim=-1) # (batch_size, n_debris)
-        closet_dist = torch.where(dr<0, closet_dist, torch.inf)
-        _, min_idx = closet_dist.min(dim=1)
-        data = od
-        label = torch.zeros((batch_size, 3), device=vdp.device)
-        for i in range(batch_size):
-            label[i,...] = closet_approach[i, min_idx[i],:]
-        return data, label
+    from torch.utils.tensorboard import SummaryWriter
+    from env.dynamic import cwutils
+    import data.dicts as D
+
     
-    test_data, test_label = _gen_data(10000, 1)
-    print([(test_data[:,:,i]>0).float().mean().item() for i in range(6)])
-    print([(test_label[:,i]>0).float().mean().item() for i in range(3)])
+    from data.buffer import replayBuffer
+    buffer_keys = ["primal_states", "debris_states", "primal_obss", "debris_obss", "values"]
+    update_batchsize = 2048
+    buffer = replayBuffer(buffer_keys, capacity=200000, minimal_size=2*update_batchsize, batch_size=update_batchsize)
+
+    from agent.agent import setTransDDPG
+    LD = setTransDDPG(main_obs_dim=20, 
+                    sub_obs_dim=9, 
+                    sub_feature_dim=48, 
+                    action_dim=3, 
+                    num_heads=3, 
+                    encoder_fc_hiddens=[128],
+                    pma_fc_hiddens=[128],
+                    pma_mab_fc_hiddens=[128],
+                    initial_fc_output=12,
+                    initial_fc_hiddens=[512]*2,
+                    encoder_depth=1, 
+                    device=vdp.device, 
+                    gamma=gamma,
+                    critic_hiddens=[256]*2,
+                    actor_hiddens=[256]*2,
+                    action_upper_bounds=[ 1]*3,
+                    action_lower_bounds=[-1]*3,
+                    )
+    
+    from rich.progress import Progress
+    import numpy as np
+    n_epoch = 1
+    n_episode = 200
+    n_step = 1200
+    mpc_horizon = 2
+
+    Np = 128
+    Nd = 1
+    total_rewards = []
+
+    writer = SummaryWriter("./tblogs/mpc")
+    sp = vdp.randomPrimalStates(Np)
+    sd = vdp.randomDebrisStates(Nd)
+    op, od = vdp.getObss(sp, sd)
+
+    with Progress() as pbar:
+        task = pbar.add_task(total=n_episode, description="episode")
+        Nd = np.random.randint(1, 4)
+        for episode in range(n_episode):
+            LD._OU = True
+            LD.init_OU_noise(Np, scale=1.)
+            critic_loss = []
+            sp = vdp.randomPrimalStates(Np)
+            sd = vdp.randomDebrisStates(Nd)
+            op, od = vdp.getObss(sp, sd)
+            td_sim = dict(zip(buffer_keys, [[] for _ in buffer_keys]))
+            done_flags = torch.zeros(Np, dtype=torch.bool)
+            done_steps = (n_step-1)*torch.ones(Np, dtype=torch.int32)
+            Datas = []
+            Rewards = torch.zeros((n_step, Np))
+            for step in range(n_step):        
+                _, actions = LD.act(op, od)
+                (next_sp, next_sd), rewards, dones, (next_op, next_od) = vdp.propagate(sp, sd, actions,
+                                                                                    discard_leaving=True,
+                                                                                    new_debris=True)
+                data = (sp, torch.stack([sd]*Np, dim=0), op, od)
+                data = [d[~done_flags].detach().cpu() for d in data] + [None] # values
+                Datas.append(data)
+
+                if buffer.size > buffer.minimal_size:
+                    td_buffer = buffer.sample(stack=False)
+                    LD._OU = False
+                    LD.update(td_buffer, vdp, horizon=mpc_horizon, n_update=1)
+                    LD._OU = True
+
+                Rewards[step,...] = rewards.detach().cpu()
+                sp, sd, op, od = next_sp, next_sd, next_op, next_od
+                done_steps[dones.cpu()&~done_flags] = step
+                done_flags |= dones.cpu()
+                if done_flags.all():
+                    break
+
+            LD._OU = False
+
+            Values = torch.zeros((n_step, Np))
+            for step in range(n_step-1, -1, -1):
+                if (step>done_steps).all():
+                    continue
+                if step==n_step-1:
+                    Values[step, step==done_steps] = Rewards[step, step==done_steps] \
+                        + LD._critic(next_op[step==done_steps], next_od[step==done_steps]).detach().cpu().squeeze(dim=-1)*LD.gamma
+                else:
+                    Values[step, step==done_steps] = Rewards[step, step==done_steps]
+                    Values[step, step< done_steps] = Rewards[step, step< done_steps] + Values[step+1, step<done_steps]*LD.gamma
+                Datas[step][-1] = Values[step, step<=done_steps]
+                if torch.isnan(Values).any():
+                    print("nan value")
+            total_rewards.append(Rewards.sum(dim=0).mean().item())
+            for _data in Datas:
+                [td_sim[buffer_keys[i]].extend(_data[i]) for i in range(len(_data))]
+            dicts = D.split_dict(td_sim, update_batchsize)
+            for _dict in dicts:
+                cl, al, _ = LD.update(_dict, vdp, horizon=mpc_horizon, n_update=1)
+                critic_loss.append(cl)
+            buffer.from_dict(td_sim)
+
+            writer.add_scalar("reward", total_rewards[-1], episode)
+            writer.add_scalar("critic_loss", np.mean(critic_loss), episode)
+
+            for name, param in LD.setTrans.named_parameters():
+                if param.grad is None:
+                    continue
+                writer.add_histogram("setTrans_"+name+"_data", param.data, episode)
+                writer.add_histogram("setTrans_"+name+"_grad", param.grad, episode)
+            for name, param in LD.critic.named_parameters():
+                if param.grad is None:
+                    continue
+                writer.add_histogram("critic_"+name+"_data", param.data, episode)
+                writer.add_histogram("critic_"+name+"_grad", param.grad, episode)
+            for name, param in LD.actor.named_parameters():
+                if param.grad is None:
+                    continue
+                writer.add_histogram("actor_"+name+"_data", param.data, episode)
+                writer.add_histogram("actor_"+name+"_grad", param.grad, episode)
+            pbar.advance(task, 1)
+
+
+if __name__ == "__main__":
+    setTransTest()

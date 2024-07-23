@@ -1373,7 +1373,7 @@ class deepSetDDPG(lstmDDPG_V):
         batch_size = main_obss.shape[0]
 
         for _ in range(n_update):
-            critic_loss = torch.mean(F.mse_loss(self._critic(main_obss, sub_obss, permute=True), target_values.detach()))
+            critic_loss = torch.mean(F.mse_loss(self._critic(main_obss, sub_obss), target_values.detach()))
             self.critic_opt.zero_grad()
             critic_loss.backward()
             self.critic_opt.step()
