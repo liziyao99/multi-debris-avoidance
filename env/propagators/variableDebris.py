@@ -163,7 +163,7 @@ class vdPropagator:
             debris_states = debris_states + obs_noise
         rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)
         rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
-        distance = rel_pos.norm(dim=-1)/self.max_dist # shape: (n_primal, n_debris)
+        distance = rel_pos.norm(dim=-1) # shape: (n_primal, n_debris)
         min_distance, min_distance_idx = distance.min(dim=-1, keepdim=True) # shape: (n_primal, 1)
         min_approach, min_approach_idx, (sin_theta, cos_theta) = self.closet_approach(primal_states, debris_states, require_grad=require_grad)
         # shape: (n_primal, 1), (n_primal, n_debris, 1)

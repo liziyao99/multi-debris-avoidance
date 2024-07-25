@@ -109,8 +109,8 @@ def setTransTest():
     update_batchsize = 2048
     buffer = replayBuffer(buffer_keys, capacity=200000, minimal_size=2*update_batchsize, batch_size=update_batchsize)
 
-    from agent.agent import setTransDDPG
-    LD = setTransDDPG(main_obs_dim=20, 
+    from agent.agent import setTransDDPG_V
+    LD = setTransDDPG_V(main_obs_dim=20, 
                     sub_obs_dim=9, 
                     sub_feature_dim=48, 
                     action_dim=3, 

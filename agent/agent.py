@@ -1236,16 +1236,6 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
             Model Predictive Control.
             returns: `actions`, `actor_loss.item()`.
         '''
-
-        def debug_nanGrad(x:torch.Tensor=None):
-            if x is not None and x.grad_fn is not None:
-                self.actor_opt.zero_grad()
-                x.mean().backward()
-            for name, param in self.actor.named_parameters():
-                if param.grad is not None and param.grad.isnan().any():
-                    raise ValueError("nan actor grad")
-            self.actor_opt.zero_grad()
-
         _OU = self._OU
         self._OU = False
         batch_size = sp0.shape[0]
@@ -1274,12 +1264,9 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
                     disct_flags = i< truncated_steps
                     Values[i, trunc_flags] = Rewards[i, trunc_flags] + self.gamma*truncated_values[trunc_flags]
                     Values[i, disct_flags] = Rewards[i, disct_flags] + self.gamma*Values[i, disct_flags]
-                # actor_loss = -Values[0].mean()
-                actor_loss = op[:, :3].mean()
-                # actor_loss = od[:,:,:3].mean()
+                actor_loss = -Values[0].mean()
                 self.actor_opt.zero_grad()
                 actor_loss.backward()
-                debug_nanGrad()
                 self.actor_opt.step()
             actor_loss = actor_loss.item()
         else:
@@ -1332,7 +1319,7 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
 
         return critic_loss, actor_loss, partial_loss
     
-class deepSetDDPG(lstmDDPG_V):
+class deepSetDDPG_V(lstmDDPG_V):
     def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int, 
                  action_dim: int, 
                  gamma=0.99, sigma=0.1, tau=0.005, 
@@ -1431,7 +1418,7 @@ class deepSetDDPG(lstmDDPG_V):
         self.target_critic.load_state_dict(dicts["target_critic"])
         self.deepSet.load_state_dict(dicts["deepSet"])
 
-class setTransDDPG(deepSetDDPG):
+class setTransDDPG_V(deepSetDDPG_V):
     def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int,
                  action_dim: int,
                  num_heads: int,
@@ -1508,3 +1495,122 @@ class setTransDDPG(deepSetDDPG):
         self.target_actor.load_state_dict(dicts["target_actor"])
         self.target_critic.load_state_dict(dicts["target_critic"])
         self.setTrans.load_state_dict(dicts["deepSet"])
+
+class setTransDDPG(setTransDDPG_V, DDPG):
+    def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int, 
+                 action_dim: int, 
+                 num_heads: int, encoder_depth: int, 
+                 gamma=0.99, sigma=0.1, tau=0.005, 
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 critic_hiddens: typing.List[int] = [128] * 5, 
+                 encoder_fc_hiddens: typing.List[int] = [128] * 2, 
+                 initial_fc_hiddens: typing.List[int] | None = None, 
+                 initial_fc_output: int | None = None, 
+                 pma_fc_hiddens: typing.List[int] = [128] * 2, 
+                 pma_mab_fc_hiddens: typing.List[int] = [128] * 2, 
+                 action_upper_bounds=None, 
+                 action_lower_bounds=None, 
+                 actor_lr=0.00001, 
+                 critic_lr=0.0001, 
+                 device=None) -> None:
+        super().__init__(main_obs_dim, sub_obs_dim, sub_feature_dim, 
+                         action_dim, num_heads, encoder_depth, 
+                         gamma, sigma, tau, 
+                         actor_hiddens, critic_hiddens, encoder_fc_hiddens, 
+                         initial_fc_hiddens, initial_fc_output, pma_fc_hiddens, pma_mab_fc_hiddens, 
+                         action_upper_bounds, action_lower_bounds, actor_lr, critic_lr, device)
+        
+    def _init_critic(self, hiddens, lr):
+        return DDPG._init_critic(self, hiddens, lr)
+    
+    def _critic(self, main_obs: torch.Tensor, sub_seq: torch.Tensor | typing.Iterable[torch.Tensor], actions:torch.Tensor,
+                target=False, permute=None):
+        critic = self.target_critic if target else self.critic
+        obs = self.get_fc_input(main_obs, sub_seq, target, permute)
+        Q = critic(obs, actions)
+        return Q
+    
+    def MPC(self, sp0:torch.Tensor, sd0:torch.Tensor, prop, horizon=10, opt_step=10):
+        '''
+            Model Predictive Control.
+            returns: `actions`, `actor_loss.item()`.
+        '''
+        _OU = self._OU
+        self._OU = False
+        batch_size = sp0.shape[0]
+        if horizon>0:
+            for _ in range(opt_step):
+                Rewards = torch.zeros((horizon, batch_size), device=self.device)
+                truncated_Q = torch.zeros(batch_size, device=self.device)
+                Q = torch.zeros((horizon, batch_size), device=self.device)
+                done_flags = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+                truncated_steps = (horizon-1)*torch.ones(batch_size, dtype=torch.int32, device=self.device)
+                sp, sd = sp0.clone(), sd0.clone()
+                op, od = prop.getObss(sp, sd, batch_debris_obss=True)
+                for i in range(horizon):
+                    _, actions = self.act(op.detach(), od.detach(), with_OU_noise=False)
+                    (sp, sd), rewards, dones, (op, od) = prop.propagate(sp, sd, actions, new_debris=True, batch_debris_obss=True, require_grad=True)
+                    Rewards[i, ~done_flags] = rewards[~done_flags]
+                    now_done = dones&~done_flags
+                    truncated_Q[now_done] = self._critic(op[now_done], od[now_done], actions).squeeze(-1)
+                    truncated_steps[now_done] = i
+                    done_flags = done_flags|dones
+                truncated_Q[~done_flags] = self._critic(op[~done_flags], od[~done_flags], actions).squeeze(-1)
+                for i in range(horizon-1, -1, -1):
+                    if (i>truncated_steps).all():
+                        continue
+                    trunc_flags = i==truncated_steps
+                    disct_flags = i< truncated_steps
+                    Q[i, trunc_flags] = Rewards[i, trunc_flags] + self.gamma*truncated_Q[trunc_flags]
+                    Q[i, disct_flags] = Rewards[i, disct_flags] + self.gamma*Q[i, disct_flags]
+                actor_loss = -Q[0].mean()
+                self.actor_opt.zero_grad()
+                actor_loss.backward()
+                self.actor_opt.step()
+        else:
+            op, od = prop.getObss(sp0, sd0, batch_debris_obss=True)
+            _, actions = self.act(op.detach(), od.detach(), with_OU_noise=False)
+            Q = self._critic(op, od, actions)
+            actor_loss = -Q.mean()
+            self.actor_opt.zero_grad()
+            actor_loss.backward()
+            self.actor_opt.step()
+        actor_loss = actor_loss.item()
+        op, od = prop.getObss(sp0, sd0, batch_debris_obss=True)
+        actions, _ = self.act(op, od, permute=False, with_OU_noise=False)
+        self._OU = _OU
+        return actions, actor_loss
+    
+    def update(self, trans_dict, prop, n_update=10):
+        main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
+        sub_obss = trans_dict["debris_obss"]
+        next_main_obss = torch.stack(trans_dict["next_primal_obss"]).to(self.device)
+        next_sub_obss = trans_dict["next_debris_obss"]
+        actions = trans_dict["actions"].to(self.device)
+        rewards = trans_dict["rewards"].to(self.device).reshape((-1, 1))
+        dones = trans_dict["dones"].to(self.device).reshape((-1, 1))
+        batch_size = main_obss.shape[0]
+
+        for _ in range(n_update):
+            next_actions, _ = self.act(next_main_obss, next_sub_obss, target=True, with_OU_noise=False)
+            next_q_values = self._critic(next_main_obss, next_sub_obss, next_actions, target=True)
+            q_targets = rewards + self.gamma*next_q_values*(~dones)
+            critic_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions), q_targets)
+            self.critic_opt.zero_grad()
+            critic_loss.backward()
+            self.critic_opt.step()
+            critic_loss = critic_loss.item()
+
+            sp = torch.stack(trans_dict["primal_states"]).to(self.device)
+            sd = torch.cat(trans_dict["debris_states"], dim=0).to(self.device) # shape: (sum(n_debris), 6)
+            nd = np.random.randint(1, prop.max_n_debris+1)
+            indices = np.random.choice(sd.shape[0], size=(min(nd, sd.shape[0]),), replace=False)
+            sd = sd[indices]
+            _, actor_loss = self.MPC(sp, sd, prop, horizon=0, opt_step=1)
+
+            partial_loss = None
+
+        self.soft_update(self.actor, self.target_actor)
+        self.soft_update(self.critic, self.target_critic)
+
+        return critic_loss, actor_loss, partial_loss
