@@ -1217,7 +1217,7 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
             _, actions = self.act(main_obss, sub_obs)
             actions[1:,:] = self.actor.uniSample(search_population-1)
             states, rewards, dones, obss = prop.propagate(main_states, sub_state, actions)
-            V_critics = self._critic(obss[0], obss[1])
+            V_critics = self._critic(obss[0], obss[1]).detach()
 
             states = list(states)
             states[0] = states[0].unsqueeze(1)
@@ -1227,7 +1227,7 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
             obss[0] = obss[0].unsqueeze(1)
             obss = list(zip(*obss))
             
-            tree.extend(states, obss, actions.unsqueeze(1), rewards.unsqueeze(1), dones.unsqueeze(1), V_critics.unsqueeze(1), parents=parents)
+            tree.extend(states, obss, actions.unsqueeze(1), rewards.unsqueeze(1), dones.unsqueeze(1), parents=parents, V_critics=V_critics.unsqueeze(1))
             tree.backup()
         return tree.best_action()
     
@@ -1367,7 +1367,7 @@ class deepSetDDPG_V(lstmDDPG_V):
             fc_in = torch.cat([main_obs.to(self.device), sub_feature], dim=-1)
         return fc_in
     
-    def update(self, trans_dict, prop, horizon:int=1, n_update=10):
+    def update(self, trans_dict, prop, horizon:int=1, n_update=1):
         main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
         sub_obss = trans_dict["debris_obss"]
         target_values = torch.stack(trans_dict["values"]).to(self.device).reshape((-1,1))
@@ -1530,6 +1530,41 @@ class setTransDDPG(setTransDDPG_V, DDPG):
         Q = critic(obs, actions)
         return Q
     
+    def tree_act(self, main_state:torch.Tensor, sub_state:torch.Tensor, prop, 
+                 search_step:int, search_population:int,
+                 max_gen=10, select_explore_eps=0.2):
+        if main_state.dim()==0:
+            main_state = main_state.unsqueeze(0)
+        if main_state.shape[0]>1:
+            raise ValueError("only support single observation")
+        state = (main_state, sub_state)
+        obs = prop.getObss(main_state, sub_state)
+        tree = searchTree.from_data(state, obs, max_gen=max_gen, gamma=self.gamma, select_explore_eps=select_explore_eps, device=self.device)
+        tree.root.V_target = torch.zeros((1,1), device=self.device) # dummy value for select
+        for _ in range(search_step):
+            selected = tree.select(1, "value")[0]
+            parents = [selected]*search_population
+            main_state = selected.state[0]
+            main_states = torch.cat([main_state]*search_population, dim=0)
+            sub_state = selected.state[1]
+            main_obss, sub_obs = prop.getObss(main_states, sub_state)
+            _, actions = self.act(main_obss, sub_obs)
+            actions[1:,:] = self.actor.uniSample(search_population-1)
+            states, rewards, dones, obss = prop.propagate(main_states, sub_state, actions)
+            Q_critics = self._critic(main_obss, sub_obs, actions).detach()
+
+            states = list(states)
+            states[0] = states[0].unsqueeze(1)
+            states[1] = torch.stack([states[1]]*search_population, dim=0)
+            states = list(zip(*states))
+            obss = list(obss)
+            obss[0] = obss[0].unsqueeze(1)
+            obss = list(zip(*obss))
+            
+            tree.extend(states, obss, actions.unsqueeze(1), rewards.unsqueeze(1), dones.unsqueeze(1), parents=parents, Q_critics=Q_critics.unsqueeze(1))
+            tree.backupQ()
+        return tree.best_action()
+    
     def MPC(self, sp0:torch.Tensor, sd0:torch.Tensor, prop, horizon=10, opt_step=10):
         '''
             Model Predictive Control.
@@ -1567,6 +1602,8 @@ class setTransDDPG(setTransDDPG_V, DDPG):
                 self.actor_opt.zero_grad()
                 actor_loss.backward()
                 self.actor_opt.step()
+            op, od = prop.getObss(sp0, sd0, batch_debris_obss=True)
+            actions, _ = self.act(op, od, permute=False, with_OU_noise=False)
         else:
             op, od = prop.getObss(sp0, sd0, batch_debris_obss=True)
             _, actions = self.act(op.detach(), od.detach(), with_OU_noise=False)
@@ -1576,37 +1613,47 @@ class setTransDDPG(setTransDDPG_V, DDPG):
             actor_loss.backward()
             self.actor_opt.step()
         actor_loss = actor_loss.item()
-        op, od = prop.getObss(sp0, sd0, batch_debris_obss=True)
-        actions, _ = self.act(op, od, permute=False, with_OU_noise=False)
         self._OU = _OU
         return actions, actor_loss
     
-    def update(self, trans_dict, prop, n_update=10):
+    def update(self, trans_dict, n_update=1, mode="mc"):
+        if mode not in ("mc", "td"):
+            raise ValueError("mode must be either `mc` or `td`")
         main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
         sub_obss = trans_dict["debris_obss"]
-        next_main_obss = torch.stack(trans_dict["next_primal_obss"]).to(self.device)
-        next_sub_obss = trans_dict["next_debris_obss"]
-        actions = trans_dict["actions"].to(self.device)
-        rewards = trans_dict["rewards"].to(self.device).reshape((-1, 1))
-        dones = trans_dict["dones"].to(self.device).reshape((-1, 1))
+        actions = torch.stack(trans_dict["actions"]).to(self.device)
         batch_size = main_obss.shape[0]
 
         for _ in range(n_update):
-            next_actions, _ = self.act(next_main_obss, next_sub_obss, target=True, with_OU_noise=False)
-            next_q_values = self._critic(next_main_obss, next_sub_obss, next_actions, target=True)
-            q_targets = rewards + self.gamma*next_q_values*(~dones)
-            critic_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions), q_targets)
-            self.critic_opt.zero_grad()
-            critic_loss.backward()
-            self.critic_opt.step()
-            critic_loss = critic_loss.item()
+            if mode=="td":
+                next_main_obss = torch.stack(trans_dict["next_primal_obss"]).to(self.device)
+                next_sub_obss = trans_dict["next_debris_obss"]
+                actions = torch.stack(trans_dict["actions"]).to(self.device)
+                rewards = torch.stack(trans_dict["rewards"]).to(self.device).reshape((-1, 1))
+                dones = torch.stack(trans_dict["dones"]).to(self.device).reshape((-1, 1))
+                next_actions, _ = self.act(next_main_obss, next_sub_obss, target=True, with_OU_noise=False)
+                next_q_values = self._critic(next_main_obss, next_sub_obss, next_actions, target=True).detach()
+                q_targets = rewards + self.gamma*next_q_values*(~dones)
+                critic_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions), q_targets)
+                self.critic_opt.zero_grad()
+                critic_loss.backward()
+                self.critic_opt.step()
+                critic_loss = critic_loss.item()
+            elif mode=="mc":
+                q_targets = torch.stack(trans_dict["target_Q"]).to(self.device).reshape((-1, 1))
+                critic_loss = torch.mean(F.mse_loss(self._critic(main_obss, sub_obss, actions), q_targets.detach()))
+                self.critic_opt.zero_grad()
+                critic_loss.backward()
+                self.critic_opt.step()
+                critic_loss = critic_loss.item()
 
-            sp = torch.stack(trans_dict["primal_states"]).to(self.device)
-            sd = torch.cat(trans_dict["debris_states"], dim=0).to(self.device) # shape: (sum(n_debris), 6)
-            nd = np.random.randint(1, prop.max_n_debris+1)
-            indices = np.random.choice(sd.shape[0], size=(min(nd, sd.shape[0]),), replace=False)
-            sd = sd[indices]
-            _, actor_loss = self.MPC(sp, sd, prop, horizon=0, opt_step=1)
+            _, actions = self.act(main_obss, sub_obss, with_OU_noise=False)
+            Q = self._critic(main_obss, sub_obss, actions)
+            actor_loss = -Q.mean()
+            self.actor_opt.zero_grad()
+            actor_loss.backward()
+            self.actor_opt.step()
+            actor_loss = actor_loss.item()
 
             partial_loss = None
 

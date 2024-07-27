@@ -95,7 +95,7 @@ class vdPropagator:
         dones = self.getDones(next_primal_states, next_debris_states, require_grad=False)
         if discard_leaving:
             next_debris_states = self.discard_leaving(next_debris_states)
-        if new_debris:
+        if new_debris or next_debris_states.shape[0]==0:
             if next_debris_states.shape[0]==0:
                 next_debris_states = self.randomDebrisStates(1, old=next_debris_states)
             while next_debris_states.shape[0]<self.max_n_debris and np.random.rand()<self.p_new_debris:
@@ -163,7 +163,8 @@ class vdPropagator:
             debris_states = debris_states + obs_noise
         rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)
         rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
-        distance = rel_pos.norm(dim=-1) # shape: (n_primal, n_debris)
+        distance = rel_pos.norm(dim=-1)/self.max_dist # shape: (n_primal, n_debris)
+        speed = rel_vel.norm(dim=-1)/(10*self.max_dist)
         min_distance, min_distance_idx = distance.min(dim=-1, keepdim=True) # shape: (n_primal, 1)
         min_approach, min_approach_idx, (sin_theta, cos_theta) = self.closet_approach(primal_states, debris_states, require_grad=require_grad)
         # shape: (n_primal, 1), (n_primal, n_debris, 1)
@@ -171,12 +172,13 @@ class vdPropagator:
         ma_debris_states = debris_states[min_approach_idx.squeeze(dim=-1)] # shape: (n_primal, 6)
         md_debris_obss = md_debris_states*self._obs_zoom
         ma_debris_obss = ma_debris_states*self._obs_zoom
-        min_distance, min_approach = min_distance/self.max_dist, min_approach/self.max_dist
+        min_distance, min_approach = min_distance, min_approach/self.max_dist
 
         base_primal_obss = primal_states*self._obs_zoom # shape: (n_primal, 6)
         base_debris_obss = rel_states*self._obs_zoom.unsqueeze(dim=0) # shape: (n_primal, n_debris, 6)
-        primal_obss = torch.cat((base_primal_obss, md_debris_obss, min_distance, ma_debris_obss, min_approach), dim=-1) # shape: (n_primal, 20)
-        debris_obss = torch.cat((base_debris_obss, distance.unsqueeze(-1), sin_theta, cos_theta), dim=-1) # shape (n_primal, n_debris, 9)
+        # primal_obss = torch.cat((base_primal_obss, md_debris_obss, min_distance, ma_debris_obss, min_approach), dim=-1) # shape: (n_primal, 20)
+        primal_obss = torch.cat((base_primal_obss,), dim=-1) # shape: (n_primal, 6)
+        debris_obss = torch.cat((base_debris_obss, distance.unsqueeze(-1), speed.unsqueeze(-1), cos_theta), dim=-1) # shape (n_primal, n_debris, 9)
 
         return primal_obss, debris_obss
         

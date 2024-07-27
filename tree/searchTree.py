@@ -161,6 +161,42 @@ class searchTree:
                     node.Q_target = node.Q_target.reshape((1,1))
         return
     
+    def backupQ(self, mode="mean"):
+        '''
+            args:
+                `mode`: {self._backup_modes}.
+        '''
+        if mode not in self._backup_modes:
+            raise(ValueError(f"mode must be in {self._backup_modes}."))
+        for g in range(self.max_gen-1,-1,-1):
+            for node in self.gens[g]:
+                if node.is_leaf:
+                    if not node.is_root:
+                        if not node.done:
+                            if node.Q_critic is None:
+                                raise(ValueError("undone leaf node with no `Q_critic`."))
+                            node.Q_target = node.Q_critic
+                        else:
+                            node.Q_target = node.reward + self.gamma*node.terminal_reward
+                    if not node.done:
+                        node.V_target = (node.Q_target-node.reward)/self.gamma
+                    else:
+                        node.V_target = node.terminal_reward
+                else:
+                    next_Q_targets = torch.cat([child.Q_target for child in node.children])
+                    if mode=="max":
+                        node.V_target = torch.max(next_Q_targets)
+                        if not node.is_root:
+                            node.Q_target = node.reward + self.gamma*torch.max(next_Q_targets)
+                    elif mode=="mean":
+                        node.V_target = torch.mean(next_Q_targets)
+                        if not node.is_root:
+                            node.Q_target = node.reward + self.gamma*torch.mean(next_Q_targets)
+                node.V_target = node.V_target.reshape((1,1))
+                if not node.is_root:
+                    node.Q_target = node.Q_target.reshape((1,1))
+        return
+    
     def select(self, size, mode="uniform") -> typing.List[stateNodeV2]:
         if mode not in self._select_modes:
             raise(ValueError(f"mode must be in {self._select_modes}."))
@@ -180,18 +216,26 @@ class searchTree:
             selected = [nodes[_i] for _i in idx]
         return selected
     
-    def new_node(self, state, obs, action, reward, done, V_critic, parent:stateNodeV2, check_parent=False):
+    def new_node(self, state, obs, action, reward, done, parent:stateNodeV2, 
+                 V_critic=None, Q_critic=None, check_parent=False):
         if check_parent and (parent not in self.nodes):
             raise(ValueError("parent not in tree."))
         node = stateNodeV2.from_data(state, obs, action, reward, done, parent=parent, device=self.device)
         node.V_critic = V_critic
+        node.Q_critic = Q_critic
         self.nodes.append(node)
         self.gens[parent.depth+1].append(node)
         return node
 
-    def extend(self, states, obss, actions, rewards, dones, V_critics, parents:typing.List[stateNodeV2], check_parent=False):
+    def extend(self, states, obss, actions, rewards, dones, parents:typing.List[stateNodeV2], 
+               V_critics=None, Q_critics=None, check_parent=False):
+        if V_critics is None:
+            V_critics = [None for _ in range(len(parents))]
+        if Q_critics is None:
+            Q_critics = [None for _ in range(len(parents))]
         for i in range(len(parents)):
-            self.new_node(states[i], obss[i], actions[i], rewards[i], dones[i], V_critics[i], parents[i], check_parent=check_parent)
+            self.new_node(states[i], obss[i], actions[i], rewards[i], dones[i], parents[i], 
+                          V_critic=V_critics[i], Q_critic=Q_critics[i], check_parent=check_parent)
 
     def best_action(self) -> torch.Tensor:
         '''
