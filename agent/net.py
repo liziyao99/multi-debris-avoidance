@@ -60,6 +60,28 @@ class fcNet(baseModule):
         '''
         raise(NotImplementedError)
 
+class discretePolicyNet(fcNet):
+    def __init__(self, n_feature: int, n_output: int, n_hiddens: torch.List[int]):
+        super().__init__(n_feature, n_output, n_hiddens)
+
+    def post_process(self, x):
+        return nn.functional.softmax(x, dim=-1)
+    
+    def distribution(self, output):
+        dist = torch.distributions.Categorical(output)
+        return dist
+
+    def sample(self, output):
+        dist = self.distribution(output)
+        return dist.sample()
+    
+    def nominal_output(self, x, require_grad=True):
+        '''
+            argmax of categorial dist.
+        '''
+        output = self.forward(x)
+        nominal = torch.argmax(output, dim=-1)
+        return nominal
 
 class boundedFcNet(fcNet):
     def __init__(self,
@@ -202,7 +224,6 @@ class normalDistNet(boundedFcNet):
     def nominal_output(self, x, require_grad=True):
         '''
             mean of normal dist.
-            To be overloaded when network output randomly.
         '''
         output = self.forward(x)
         nominal = output[:,:self.n_sample]

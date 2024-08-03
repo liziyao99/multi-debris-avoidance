@@ -226,4 +226,7 @@ def setTransTest():
 
 
 if __name__ == "__main__":
-    setTransTest()
+    from trainer.myGym.gymTrainer import gymPPO, gymPPO_discrete
+    # gd = gymPPO('Pendulum-v1', render_mode=None)
+    gd = gymPPO("Pendulum-v1", render_mode=None)
+    res = gd.train(1, 500)

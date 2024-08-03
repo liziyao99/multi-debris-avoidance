@@ -258,16 +258,63 @@ class normalDistAgent(boundedRlAgent):
         self.actor_opt.step()
         self.critic_opt.step()
         return actor_loss.item(), critic_loss.item()
-    
 
-class PPOClipAgent(boundedRlAgent):
+class PPO_discrete(rlAgent):
+    def __init__(self, obs_dim: int, action_num: int, 
+                 actor_hiddens: typing.List[int], critic_hiddens: typing.List[int], 
+                 actor_lr=0.00001, critic_lr=0.0001, 
+                 gamma=0.99, lmd=0.99, clip_eps=0.2, epochs=10,
+                 device=None) -> None:
+        self.action_num = action_num
+        super().__init__(obs_dim, action_num, actor_hiddens, critic_hiddens, actor_lr, critic_lr, device)    
+        self.gamma = gamma
+        self.lmd = lmd
+        self.clip_eps = clip_eps
+        self.epochs = epochs
+
+    def _init_actor(self, hiddens, lr):
+        self.actor = discretePolicyNet(self.obs_dim, self.action_num, hiddens).to(self.device)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.modules.append(self.actor)
+
+    def update(self, trans_dict):
+        trans_dict = D.torch_dict(trans_dict, device=self.device)
+        obss = trans_dict["obss"]
+        next_obss = trans_dict["next_obss"]
+        actions = trans_dict["actions"].to(torch.int64)
+        dones = trans_dict["dones"].view((-1,1))
+        rewards = trans_dict["rewards"].view((-1,1))
+        
+        td_targets = rewards + self.gamma*self.critic(next_obss)*(~dones)
+
+        td_deltas = td_targets - self.critic(obss)
+        advantage = utils.compute_advantage(self.gamma, self.lmd, td_deltas)
+        old_log_probs = torch.log(self.actor(obss).gather(1, actions)).detach()
+
+        for _ in range(self.epochs):
+            log_probs = torch.log(self.actor(obss).gather(1, actions))
+            ratio = torch.exp(log_probs - old_log_probs)
+            surr1 = ratio * advantage
+            surr2 = torch.clamp(ratio, 1-self.clip_eps, 1+self.clip_eps) * advantage
+            actor_loss = torch.mean(-torch.min(surr1, surr2))
+            critic_loss = F.mse_loss(self.critic(obss), td_targets.detach())
+            self.actor_opt.zero_grad()
+            self.critic_opt.zero_grad()
+            actor_loss.backward()
+            critic_loss.backward()
+            self.actor_opt.step()
+            self.critic_opt.step()
+
+        return critic_loss.item(), actor_loss.item()
+
+class PPO(boundedRlAgent):
     def __init__(self, 
                  obs_dim: int = 6, 
                  action_dim: int = 3, 
                  actor_hiddens: typing.List[int] = [128] * 5, 
                  critic_hiddens: typing.List[int] = [128] * 5, 
-                 action_upper_bound=0.2, 
-                 action_lower_bound=-0.2, 
+                 action_upper_bounds:typing.List[float]|None=None, 
+                 action_lower_bounds:typing.List[float]|None=None, 
                  actor_lr=1e-5, 
                  critic_lr=1e-4, 
                  gamma=0.99,
@@ -275,9 +322,19 @@ class PPOClipAgent(boundedRlAgent):
                  clip_eps=0.2,
                  epochs=10,
                  device=None) -> None:
-        bound = (action_upper_bound-action_lower_bound)/2
-        upper_bounds = [action_upper_bound]*action_dim + [bound/3]*action_dim
-        lower_bounds = [action_lower_bound]*action_dim + [bound/30]*action_dim
+        if action_upper_bounds is None:
+            action_upper_bounds = [ 1]*action_dim
+        if action_lower_bounds is None:
+            action_lower_bounds = [-1]*action_dim
+        if not isinstance(action_upper_bounds, torch.Tensor):
+            action_upper_bounds = torch.tensor(action_upper_bounds, dtype=torch.float32, device=device)
+        if not isinstance(action_lower_bounds, torch.Tensor):
+            action_lower_bounds = torch.tensor(action_lower_bounds, dtype=torch.float32, device=device)
+        action_upper_bounds = action_upper_bounds.flatten()
+        action_lower_bounds = action_lower_bounds.flatten()
+        ranges = (action_upper_bounds-action_lower_bounds)/2
+        upper_bounds = torch.cat((action_upper_bounds, ranges/3))
+        lower_bounds = torch.cat((action_lower_bounds, ranges/30))
         super().__init__(obs_dim, action_dim, actor_hiddens, critic_hiddens, upper_bounds, lower_bounds, actor_lr, critic_lr, device)
         self.gamma = gamma
         self.lmd = lmd
@@ -290,28 +347,31 @@ class PPOClipAgent(boundedRlAgent):
         self.modules.append(self.actor)
 
     def update(self, trans_dict:dict):
-        dict_torch = {}
-        for key in trans_dict.keys():
-            dict_torch[key] = torch.from_numpy(trans_dict[key]).to(self.device)
+        trans_dict = D.torch_dict(trans_dict, device=self.device)
+        obss = trans_dict["obss"]
+        next_obss = trans_dict["next_obss"]
+        actions = trans_dict["actions"]
+        dones = trans_dict["dones"].view((-1,1))
+        rewards = trans_dict["rewards"].view((-1,1))
+        
+        td_targets = rewards + self.gamma*self.critic(next_obss)*(~dones)
 
-        td_targets = dict_torch["rewards"].unsqueeze(dim=1) + self.gamma*self.critic(dict_torch["next_obss"])*(1-dict_torch["dones"].to(torch.float32).unsqueeze(dim=1))
-        td_deltas = td_targets - self.critic(dict_torch["obss"])
+        td_deltas = td_targets - self.critic(obss)
+        advantage = utils.compute_advantage(self.gamma, self.lmd, td_deltas)
 
-        # advantage = utils.compute_advantage(self.gamma, self.lmd, td_deltas.cpu()).to(self.device)
-        advantage = td_deltas.detach()
-        old_output = self.actor(dict_torch["obss"]).detach()
+        old_output = self.actor(obss).detach()
         action_dists = self.actor.distribution(old_output)
-        old_log_probs = action_dists.log_prob(dict_torch["actions"]).sum(dim=1, keepdim=True)
+        old_log_probs = action_dists.log_prob(actions).sum(dim=1, keepdim=True).detach()
 
         for _ in range(self.epochs):
-            output = self.actor(dict_torch["obss"])
+            output = self.actor(obss)
             action_dists = self.actor.distribution(output)
-            log_probs = action_dists.log_prob(dict_torch["actions"]).sum(dim=1, keepdim=True)
+            log_probs = action_dists.log_prob(actions).sum(dim=1, keepdim=True)
             ratio = torch.exp(log_probs - old_log_probs)
             surr1 = ratio * advantage
             surr2 = torch.clamp(ratio, 1-self.clip_eps, 1+self.clip_eps) * advantage
             actor_loss = torch.mean(-torch.min(surr1, surr2))
-            critic_loss = torch.mean(F.mse_loss(self.critic(dict_torch["obss"]), td_targets.detach()))
+            critic_loss = F.mse_loss(self.critic(obss), td_targets.detach())
             self.actor_opt.zero_grad()
             self.critic_opt.zero_grad()
             actor_loss.backward()
@@ -319,7 +379,7 @@ class PPOClipAgent(boundedRlAgent):
             self.actor_opt.step()
             self.critic_opt.step()
 
-        return actor_loss.item(), critic_loss.item()
+        return critic_loss.item(), actor_loss.item()
     
 
 class planTrackAgent(boundedRlAgent):
@@ -1441,18 +1501,23 @@ class setTransDDPG_V(deepSetDDPG_V):
         self.sub_feature_dim = sub_feature_dim
         self.fc_in_dim = main_obs_dim+sub_feature_dim
         DDPG.__init__(self, self.fc_in_dim, action_dim, gamma, sigma, tau, actor_hiddens, critic_hiddens, action_upper_bounds, action_lower_bounds, actor_lr, critic_lr, device)
+        self._init_setTrans(num_heads, encoder_fc_hiddens, encoder_depth, initial_fc_hiddens, initial_fc_output, pma_fc_hiddens, pma_mab_fc_hiddens, critic_lr)
 
-        self.setTrans = setTransformer(n_feature=sub_obs_dim,
+    def _init_setTrans(self,
+                       num_heads, encoder_fc_hiddens, encoder_depth,
+                       initial_fc_hiddens, initial_fc_output,
+                       pma_fc_hiddens, pma_mab_fc_hiddens, lr):
+        self.setTrans = setTransformer(n_feature=self.sub_obs_dim,
                                        num_heads=num_heads,
                                        encoder_fc_hiddens=encoder_fc_hiddens,
                                        encoder_depth=encoder_depth,
                                        initial_fc_hiddens=initial_fc_hiddens,
                                        initial_fc_output=initial_fc_output,
-                                       n_output=sub_feature_dim,
+                                       n_output=self.sub_feature_dim,
                                        pma_fc_hiddens=pma_fc_hiddens,
                                        pma_mab_fc_hiddens=pma_mab_fc_hiddens,
-                                       ).to(device)
-        self.critic_opt = torch.optim.Adam(list(self.critic.parameters())+list(self.setTrans.parameters()), lr=critic_lr)
+                                       ).to(self.device)
+        self.critic_opt = torch.optim.Adam(list(self.critic.parameters())+list(self.setTrans.parameters()), lr=lr)
         self.modules.append(self.setTrans)
         
     def get_fc_input(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], target=False, permute=None):
@@ -1661,3 +1726,162 @@ class setTransDDPG(setTransDDPG_V, DDPG):
         self.soft_update(self.critic, self.target_critic)
 
         return critic_loss, actor_loss, partial_loss
+    
+class setTransSAC(setTransDDPG, SAC):
+    def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int, action_dim: int, 
+                 num_heads: int, 
+                 encoder_depth: int, 
+                 action_bounds: typing.List[float], 
+                 sigma_upper_bounds: typing.List[float],
+                 gamma=0.99, 
+                 tau=0.005, 
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 critic_hiddens: typing.List[int] = [128] * 5, 
+                 encoder_fc_hiddens: typing.List[int] = [128] * 2, 
+                 initial_fc_hiddens: typing.List[int] | None = None, 
+                 initial_fc_output: int | None = None, 
+                 pma_fc_hiddens: typing.List[int] = [128] * 2, 
+                 pma_mab_fc_hiddens: typing.List[int] = [128] * 2, 
+                 target_entropy:float=None,
+                 actor_lr=0.00001, critic_lr=0.0001, device=None) -> None:
+        self.main_obs_dim = main_obs_dim
+        self.sub_obs_dim = sub_obs_dim
+        self.sub_feature_dim = sub_feature_dim
+        self.fc_in_dim = main_obs_dim+sub_feature_dim
+        SAC.__init__(self, self.fc_in_dim, action_dim, action_bounds, sigma_upper_bounds, 
+                     gamma=gamma, tau=tau, 
+                     actor_hiddens=actor_hiddens, critic_hiddens=critic_hiddens, 
+                     target_entropy=target_entropy, actor_lr=actor_lr, critic_lr=critic_lr, device=device)
+        self._init_setTrans(num_heads, encoder_fc_hiddens, encoder_depth, initial_fc_hiddens, initial_fc_output, pma_fc_hiddens, pma_mab_fc_hiddens, critic_lr)
+
+    def _init_critic(self, hiddens, lr):
+        return SAC._init_critic(self, hiddens, lr)
+
+    def _init_actor(self, hiddens, action_bound, sigma_upper_bound, lr):
+        return SAC._init_actor(self, hiddens, action_bound, sigma_upper_bound, lr)
+
+    def _critic(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], actions, idx:typing.Literal[1,2]=1, target=False):
+        if idx==1:
+            if target:
+                critic = self.target_critic1
+            else:
+                critic = self.critic1
+        elif idx==2:
+            if target:
+                critic = self.target_critic2
+            else:
+                critic = self.critic2
+        else:
+            raise ValueError("idx must be either 1 or 2")
+        obss = self.get_fc_input(main_obs, sub_seq)
+        return critic(obss, actions)
+    
+    def act(self, main_obs, sub_seq):
+        obss = self.get_fc_input(main_obs, sub_seq)
+        return SAC.act(self, obss)
+
+    def QMin(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], actions, target=False):
+        obss = self.get_fc_input(main_obs, sub_seq)
+        actions = actions.to(self.device)
+        if target:
+            q1 = self.target_critic1(obss, actions)
+            q2 = self.target_critic2(obss, actions)
+        else:
+            q1 = self.critic1(obss, actions)
+            q2 = self.critic2(obss, actions)
+        return torch.min(q1, q2)
+    
+    def QEntropy(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], actions, entropy, target=False):
+        return self.log_alpha.exp()*entropy+self.QMin(main_obs, sub_seq, actions, target=target)
+    
+    def V(self, main_obs:torch.Tensor, sub_seq:torch.Tensor|typing.Iterable[torch.Tensor], target=False):
+        obss = self.get_fc_input(main_obs, sub_seq)
+        actions, log_probs = self.actor.tanh_sample(obss)
+        values = self.QEntropy(obss, actions, -log_probs, target=target)
+        return values
+
+    def update(self, trans_dict, n_update=1, mode="mc"):
+        if mode not in ("mc", "td"):
+            raise ValueError("mode must be either `mc` or `td`")
+        main_obss = torch.stack(trans_dict["primal_obss"]).to(self.device)
+        sub_obss = trans_dict["debris_obss"]
+        actions = torch.stack(trans_dict["actions"]).to(self.device)
+
+        for _ in range(n_update):
+            if mode=="td":
+                rewards = torch.stack(trans_dict["rewards"]).reshape((-1, 1)).to(self.device)
+                next_main_obss = torch.stack(trans_dict["next_primal_obss"]).to(self.device)
+                next_sub_obss = trans_dict["next_debris_obss"]
+                dones = torch.stack(trans_dict["dones"]).reshape((-1, 1)).to(self.device)
+
+                next_actions, next_log_probs = self.actor.tanh_sample(self.get_fc_input(next_main_obss, next_sub_obss))
+                next_QEntropy = self.QEntropy(next_main_obss, next_sub_obss, next_actions, -next_log_probs, target=True)
+                td_targets = rewards + self.gamma*next_QEntropy*(~dones)
+                critic1_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions, 1), td_targets.detach())
+                critic2_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions, 2), td_targets.detach())
+                self.critic1_opt.zero_grad()
+                critic1_loss.backward()
+                self.critic1_opt.step()
+                self.critic2_opt.zero_grad()
+                critic2_loss.backward()
+                self.critic2_opt.step()
+
+            elif mode=="mc":
+                q_targets = torch.stack(trans_dict["target_Q"]).to(self.device).reshape((-1, 1))
+                critic1_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions, 1), q_targets.detach())
+                critic2_loss = F.mse_loss(self._critic(main_obss, sub_obss, actions, 2), q_targets.detach())
+                self.critic1_opt.zero_grad()
+                critic1_loss.backward()
+                self.critic1_opt.step()
+                self.critic2_opt.zero_grad()
+                critic2_loss.backward()
+                self.critic2_opt.step()
+
+            new_actions, new_log_probs = self.actor.tanh_sample(self.get_fc_input(main_obss, sub_obss))
+            new_QEntropy = self.QEntropy(main_obss, sub_obss, new_actions, -new_log_probs, target=False)
+            actor_loss = -new_QEntropy.mean()
+            self.actor_opt.zero_grad()
+            actor_loss.backward()
+            self.actor_opt.step()
+
+            alpha_loss = -torch.mean((new_log_probs+self.target_entropy).detach()*self.log_alpha.exp())
+            self.log_alpha_opt.zero_grad()
+            alpha_loss.backward()
+            self.log_alpha_opt.step()
+
+        self.soft_update(self.critic1, self.target_critic1)
+        self.soft_update(self.critic2, self.target_critic2)
+
+        critic_loss = (critic1_loss+critic2_loss)/2
+        return critic_loss.item(), actor_loss.item(), alpha_loss.item()
+    
+class setTransPPO(setTransDDPG, PPO):
+    def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int, action_dim: int, 
+                 num_heads: int, 
+                 encoder_depth: int, 
+                 sigma_upper_bounds: typing.List[float],
+                 gamma=0.99, 
+                 lmd=0.005, 
+                 clip_eps=0.2,
+                 epochs=10,
+                 action_upper_bound = 1.,
+                 action_lower_bound =-1.,
+                 actor_hiddens: typing.List[int] = [128] * 5, 
+                 critic_hiddens: typing.List[int] = [128] * 5, 
+                 encoder_fc_hiddens: typing.List[int] = [128] * 2, 
+                 initial_fc_hiddens: typing.List[int] | None = None, 
+                 initial_fc_output: int | None = None, 
+                 pma_fc_hiddens: typing.List[int] = [128] * 2, 
+                 pma_mab_fc_hiddens: typing.List[int] = [128] * 2, 
+                 target_entropy:float=None,
+                 actor_lr=0.00001, critic_lr=0.0001, device=None) -> None:
+        self.main_obs_dim = main_obs_dim
+        self.sub_obs_dim = sub_obs_dim
+        self.sub_feature_dim = sub_feature_dim
+        self.fc_in_dim = main_obs_dim+sub_feature_dim
+        PPO.__init__(self, self.fc_in_dim, action_dim, 
+                     gamma=gamma, lmd=lmd, clip_eps=clip_eps, epochs=epochs,
+                     action_upper_bound=action_upper_bound, action_lower_bound=action_lower_bound, 
+                     actor_hiddens=actor_hiddens, critic_hiddens=critic_hiddens, 
+                     target_entropy=target_entropy, actor_lr=actor_lr, critic_lr=critic_lr, device=device)
+        self._init_setTrans(num_heads, encoder_fc_hiddens, encoder_depth, initial_fc_hiddens, initial_fc_output, pma_fc_hiddens, pma_mab_fc_hiddens, critic_lr)

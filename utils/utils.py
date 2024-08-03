@@ -24,6 +24,21 @@ def linspace(a:torch.Tensor, b:torch.Tensor, step:int, require_grad=False):
         x[i] = a + d*i/step
     return x
 
+def disCumSum(x, gamma=1., dim=-1, reverse=False):
+    if not isinstance(x, torch.Tensor):
+        x = torch.tensor(x, dtype=torch.float32)
+    x = torch.flip(x, dims=[dim]) if reverse else x
+    x = x.transpose(dim, -1)
+    cumsum = torch.zeros_like(x)
+    for i in range(x.shape[-1]):
+        if i==0:
+            cumsum[..., i] = x[..., i]
+        else:
+            cumsum[..., i] = x[..., i] + gamma*x[..., i-1]
+    cumsum = cumsum.transpose(dim, -1)
+    cumsum = torch.flip(cumsum, dims=[dim]) if reverse else cumsum
+    return cumsum
+
 def dotEachRow(a, b, keepdim=False):
     prod = a*b
     if isinstance(a, torch.Tensor):
@@ -70,6 +85,16 @@ def compute_advantage(gamma, lmd, td_delta:torch.Tensor):
     advantage_list.reverse()
     advantage_list = torch.vstack(advantage_list)
     return advantage_list
+
+def _compute_advantage(gamma, lmbda, td_delta):
+    td_delta = td_delta.detach().cpu().numpy()
+    advantage_list = []
+    advantage = 0.0
+    for delta in td_delta[::-1]:
+        advantage = gamma * lmbda * advantage + delta
+        advantage_list.append(advantage)
+    advantage_list.reverse()
+    return torch.tensor(advantage_list, dtype=torch.float)
 
 def smoothStepFunc(x:torch.Tensor, loc=0., scale=1., k=1., bias=0.):
     '''

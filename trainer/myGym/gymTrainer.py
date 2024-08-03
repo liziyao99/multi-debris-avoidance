@@ -3,15 +3,16 @@ from agent.agent import rlAgent
 import agent.agent as A
 from data.buffer import replayBuffer
 import data.dicts as D
+import utils
 
 import numpy as np
 import torch
 from rich.progress import Progress
 
 class gymTrainer:
-    def __init__(self, env_name:str, agent:rlAgent, buffer:replayBuffer, max_episode_step=200) -> None:
+    def __init__(self, env_name:str, agent:rlAgent, buffer:replayBuffer, max_episode_step=200, render_mode="human") -> None:
         self.name = env_name
-        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode="human")
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode=render_mode)
         self.agent = agent
         self.buffer = buffer
         self.max_episode_step = max_episode_step
@@ -43,13 +44,13 @@ class gymTrainer:
             trans_dict["obss"][step,:] = obs[:]
             _, action = self.agent.act(self.toTorch(obs))
             action = self.toNumpy(action)
-            trans_dict["actions"][step,:] = action[:]
+            trans_dict["actions"][step,:] = action
             obs, reward, terminated, truncated, info = self.env.step(action)
             reward = self.reward_normalize(reward)
             done = terminated or truncated
             trans_dict["rewards"][step] = reward
             trans_dict["next_obss"][step,:] = obs[:]
-            trans_dict["dones"][step] = done
+            trans_dict["dones"][step] = terminated # done
             step += 1
             if off_policy_train and self.buffer.size>self.buffer.minimal_size:
                 self.agent.update(self.buffer.sample())
@@ -88,9 +89,10 @@ class gymTrainer:
         return x.squeeze(dim=0).detach().cpu().numpy()
     
 class gymSAC(gymTrainer):
-    def __init__(self, env_name: str,  max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2) -> None:
+    def __init__(self, env_name: str, max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2,
+                 render_mode="human") -> None:
         self.name = env_name
-        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode="human")
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode=render_mode)
         self.max_episode_step = max_episode_step
         action_bounds = list(self.env.action_space.high)
         sigma_bounds = [10]*self.action_dim
@@ -108,9 +110,10 @@ class gymSAC(gymTrainer):
         self.loss_keys = ["critic_loss", "actor_loss", "alpha_loss"]
     
 class gymDDPG(gymTrainer):
-    def __init__(self, env_name: str, max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2) -> None:
+    def __init__(self, env_name: str, max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2,
+                 render_mode="human") -> None:
         self.name = env_name
-        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode="human")
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode=render_mode)
         self.max_episode_step = max_episode_step
         action_upper_bounds = list(self.env.action_space.high)
         action_lower_bounds = list(self.env.action_space.low)
@@ -126,3 +129,71 @@ class gymDDPG(gymTrainer):
         self.buffer = buffer
         self.loss_keys = ["critic_loss", "actor_loss"]
 
+    def simulate(self, off_policy_train=True, render=False):
+        self.agent.init_OU_noise(1)
+        return super().simulate(off_policy_train, render)
+
+class gymPPO(gymTrainer):
+    def __init__(self, env_name: str, max_episode_step=200, actor_hiddens=[128]*2, critic_hiddens=[128]*2, 
+                 render_mode="human") -> None:
+        self.name = env_name
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode=render_mode)
+        self.max_episode_step = max_episode_step
+        action_upper_bounds = list(self.env.action_space.high)
+        action_lower_bounds = list(self.env.action_space.low)
+        agent = A.PPO(self.obs_dim, self.action_dim, 
+                      actor_hiddens=actor_hiddens,
+                      critic_hiddens=critic_hiddens,
+                      action_upper_bounds=action_upper_bounds, 
+                      action_lower_bounds=action_lower_bounds,
+                      actor_lr=1e-4,
+                      critic_lr=2e-3)
+        self.agent = agent
+        self.buffer = None
+        self.loss_keys = ["critic_loss", "actor_loss"]
+
+    def train(self, n_epoch:int, n_episode:int):
+        keys = ["total_rewards"] + self.loss_keys
+        log_dict = dict(zip( keys, [[] for _ in range(len(keys))] ))
+        with Progress() as progress:
+            task = progress.add_task("epoch{0}".format(0), total=n_episode)
+            for i in range(n_epoch):
+                progress.tasks[task].description = "epoch {0} of {1}".format(i+1, n_epoch)
+                progress.tasks[task].completed = 0
+                for _ in range(n_episode):
+                    trans_dict = self.simulate()
+                    trans_dict = D.cut_dicts(trans_dict)
+                    Loss = self.agent.update(trans_dict)
+                    total_reward = trans_dict["rewards"].sum().item()
+                    log_dict["total_rewards"].append(total_reward)
+                    for i in range(len(self.loss_keys)):
+                        log_dict[self.loss_keys[i]].append(Loss[i])
+                    progress.update(task, advance=1)
+            self.agent.save(f"../model/check_point_{self.name}.ptd")
+        # return log_dict # TODO: substitute tuple returns by dict
+        return tuple(log_dict.values())
+    
+    def simulate(self, render=False):
+        return super().simulate(False, render)
+
+class gymPPO_discrete(gymPPO):
+    def __init__(self, env_name: str, max_episode_step=200, actor_hiddens=[128] * 2, critic_hiddens=[128] * 2, render_mode="human") -> None:
+        self.name = env_name
+        self.env = gym.make(env_name, max_episode_steps=max_episode_step, render_mode=render_mode)
+        self.max_episode_step = max_episode_step
+        agent = A.PPO_discrete(self.obs_dim, self.action_num, 
+                               actor_hiddens=actor_hiddens,
+                               critic_hiddens=critic_hiddens,
+                               actor_lr=1e-4,
+                               critic_lr=2e-3)
+        self.agent = agent
+        self.buffer = None
+        self.loss_keys = ["critic_loss", "actor_loss"]
+
+    @property
+    def action_num(self):
+        return self.env.action_space.n
+    
+    @property
+    def action_dim(self):
+        return 1
