@@ -162,7 +162,7 @@ class gymPPO(gymTrainer):
                 progress.tasks[task].completed = 0
                 for _ in range(n_episode):
                     trans_dict = self.simulate()
-                    trans_dict = D.cut_dicts(trans_dict)
+                    trans_dict = D.cut_dict(trans_dict)
                     Loss = self.agent.update(trans_dict)
                     total_reward = trans_dict["rewards"].sum().item()
                     log_dict["total_rewards"].append(total_reward)

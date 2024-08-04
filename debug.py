@@ -103,17 +103,11 @@ def setTransTest():
     from env.dynamic import cwutils
     import data.dicts as D
 
-    
-    from data.buffer import replayBuffer
-    buffer_keys = ["primal_states", "debris_states", "primal_obss", "debris_obss", "values"]
-    update_batchsize = 2048
-    buffer = replayBuffer(buffer_keys, capacity=200000, minimal_size=2*update_batchsize, batch_size=update_batchsize)
-
-    from agent.agent import setTransDDPG_V
-    LD = setTransDDPG_V(main_obs_dim=20, 
+    from agent.agent import setTransPPO
+    LD = setTransPPO(main_obs_dim=6, 
                     sub_obs_dim=9, 
                     sub_feature_dim=48, 
-                    action_dim=3, 
+                    action_dim=3,
                     num_heads=3, 
                     encoder_fc_hiddens=[128],
                     pma_fc_hiddens=[128],
@@ -125,22 +119,25 @@ def setTransTest():
                     gamma=gamma,
                     critic_hiddens=[256]*2,
                     actor_hiddens=[256]*2,
-                    action_upper_bounds=[ 1]*3,
-                    action_lower_bounds=[-1]*3,
                     )
-    
+
+    from data.buffer import replayBuffer
+    buffer_keys = ["primal_obss", "debris_obss", "next_primal_obss", "next_debris_obss", "actions", "rewards", "dones"]
+    update_batchsize = 2048
+    buffer = replayBuffer(buffer_keys, capacity=200000, minimal_size=2*update_batchsize, batch_size=update_batchsize)
+
     from rich.progress import Progress
     import numpy as np
     n_epoch = 1
-    n_episode = 1
+    n_episode = 150
     n_step = 1200
-    mpc_horizon = 2
+    mpc_horizon = 1
 
-    Np = 128
+    Np = 1
     Nd = 1
     total_rewards = []
 
-    writer = SummaryWriter("./tblogs/mpc")
+    writer = SummaryWriter("./tblogs/ppo")
     sp = vdp.randomPrimalStates(Np)
     sd = vdp.randomDebrisStates(Nd)
     op, od = vdp.getObss(sp, sd)
@@ -149,9 +146,8 @@ def setTransTest():
         task = pbar.add_task(total=n_episode, description="episode")
         Nd = np.random.randint(1, 4)
         for episode in range(n_episode):
-            LD._OU = True
-            LD.init_OU_noise(Np, scale=1.)
             critic_loss = []
+            alpha_loss = []
             sp = vdp.randomPrimalStates(Np)
             sd = vdp.randomDebrisStates(Nd)
             op, od = vdp.getObss(sp, sd)
@@ -165,15 +161,9 @@ def setTransTest():
                 (next_sp, next_sd), rewards, dones, (next_op, next_od) = vdp.propagate(sp, sd, actions,
                                                                                     discard_leaving=True,
                                                                                     new_debris=True)
-                data = (sp, torch.stack([sd]*Np, dim=0), op, od)
-                data = [d[~done_flags].detach().cpu() for d in data] + [None] # values
+                data = (op, od, next_op, next_od, actions, rewards, dones)
+                data = [d[~done_flags].detach().cpu() for d in data]
                 Datas.append(data)
-
-                if buffer.size > buffer.minimal_size:
-                    td_buffer = buffer.sample(stack=False)
-                    LD._OU = False
-                    LD.update(td_buffer, vdp, horizon=mpc_horizon, n_update=1)
-                    LD._OU = True
 
                 Rewards[step,...] = rewards.detach().cpu()
                 sp, sd, op, od = next_sp, next_sd, next_op, next_od
@@ -182,27 +172,11 @@ def setTransTest():
                 if done_flags.all():
                     break
 
-            LD._OU = False
-
-            Values = torch.zeros((n_step, Np))
-            for step in range(n_step-1, -1, -1):
-                if (step>done_steps).all():
-                    continue
-                if step==n_step-1:
-                    Values[step, step==done_steps] = Rewards[step, step==done_steps] \
-                        + LD._critic(next_op[step==done_steps], next_od[step==done_steps]).detach().cpu().squeeze(dim=-1)*LD.gamma
-                else:
-                    Values[step, step==done_steps] = Rewards[step, step==done_steps]
-                    Values[step, step< done_steps] = Rewards[step, step< done_steps] + Values[step+1, step<done_steps]*LD.gamma
-                Datas[step][-1] = Values[step, step<=done_steps]
             total_rewards.append(Rewards.sum(dim=0).mean().item())
             for _data in Datas:
                 [td_sim[buffer_keys[i]].extend(_data[i]) for i in range(len(_data))]
-            dicts = D.split_dict(td_sim, update_batchsize)
-            for _dict in dicts:
-                cl, al, _ = LD.update(_dict, vdp, horizon=mpc_horizon, n_update=1)
-                critic_loss.append(cl)
-            buffer.from_dict(td_sim)
+            cl, al = LD.update(td_sim)
+            critic_loss.append(cl)
 
             writer.add_scalar("reward", total_rewards[-1], episode)
             writer.add_scalar("critic_loss", np.mean(critic_loss), episode)
@@ -226,7 +200,4 @@ def setTransTest():
 
 
 if __name__ == "__main__":
-    from trainer.myGym.gymTrainer import gymPPO, gymPPO_discrete
-    # gd = gymPPO('Pendulum-v1', render_mode=None)
-    gd = gymPPO("Pendulum-v1", render_mode=None)
-    res = gd.train(1, 500)
+    setTransTest()
