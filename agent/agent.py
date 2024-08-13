@@ -891,7 +891,7 @@ class DDPG(boundedRlAgent):
         self.OU_sigma = 2e-2*torch.ones((1, action_dim), device=self.device)
         self._OU = True
 
-    def init_OU_noise(self, size=0, scale=1.):
+    def init_OU_noise(self, size, scale=1.):
         self.OU_noise = torch.randn((size, self.action_dim), device=self.device)*scale
 
     def propagate_OU_noise(self):
@@ -920,7 +920,7 @@ class DDPG(boundedRlAgent):
         self.target_critic.load_state_dict(self.critic.state_dict())
         self.modules += [self.critic, self.target_critic]
 
-    def act(self, obs:torch.Tensor, with_OU_noise=True):
+    def act(self, obs:torch.Tensor, with_OU_noise=False):
         '''
             returns:
                 `output`: output of actor.
@@ -930,6 +930,7 @@ class DDPG(boundedRlAgent):
         output = self.actor(obs)
         if with_OU_noise and self._OU:
             noise = self.propagate_OU_noise()
+            assert noise.shape == output.shape
         else: # white noise
             noise = torch.randn_like(output)*self.sigma
         sample = output + noise
@@ -1312,7 +1313,7 @@ class lstmDDPG_V(lstmDDPG, DDPG_V):
                 op, od = prop.getObss(sp, sd, batch_debris_obss=True)
                 for i in range(horizon):
                     _, actions = self.act(op.detach(), od.detach(), permute=False, with_OU_noise=False)
-                    (sp, sd), rewards, dones, (op, od) = prop.propagate(sp, sd, actions, new_debris=True, batch_debris_obss=True, require_grad=True)
+                    (sp, sd), rewards, dones, (op, od) = prop._propagate(sp, sd, actions, new_debris=True, batch_debris_obss=True, require_grad=True)
                     Rewards[i, ~done_flags] = rewards[~done_flags]
                     now_done = dones&~done_flags
                     truncated_values[now_done] = self._critic(op[now_done], od[now_done], permute=False).squeeze(-1)
@@ -1714,7 +1715,7 @@ class setTransDDPG(setTransDDPG_V, DDPG):
                 self.critic_opt.step()
                 critic_loss = critic_loss.item()
 
-            _, actions = self.act(main_obss, sub_obss, with_OU_noise=False)
+            actions, _ = self.act(main_obss, sub_obss, with_OU_noise=False)
             Q = self._critic(main_obss, sub_obss, actions)
             actor_loss = -Q.mean()
             self.actor_opt.zero_grad()
@@ -1728,6 +1729,94 @@ class setTransDDPG(setTransDDPG_V, DDPG):
         self.soft_update(self.critic, self.target_critic)
 
         return critic_loss, actor_loss, partial_loss
+    
+class setTransDDPG_L(setTransDDPG):
+    def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int, action_dim: int, 
+                 num_heads: int, encoder_depth: int, 
+                 gamma=0.99, sigma=0.1, tau=0.005, 
+                 encoder_fc_hiddens: typing.List[int] = [128] * 2, 
+                 initial_fc_hiddens: typing.List[int] | None = None, 
+                 initial_fc_output: int | None = None, 
+                 pma_fc_hiddens: typing.List[int] = [128] * 2, 
+                 pma_mab_fc_hiddens: typing.List[int] = [128] * 2, 
+                 action_upper_bounds=None, action_lower_bounds=None, 
+                 actor_lr=0.00001, critic_lr=0.0001, device=None) -> None:
+        actor_hiddens, critic_hiddens = None, None
+        super().__init__(main_obs_dim, sub_obs_dim, sub_feature_dim, action_dim, num_heads, encoder_depth, gamma, sigma, tau, actor_hiddens, critic_hiddens, encoder_fc_hiddens, initial_fc_hiddens, initial_fc_output, pma_fc_hiddens, pma_mab_fc_hiddens, action_upper_bounds, action_lower_bounds, actor_lr, critic_lr, device)
+
+    def _init_actor(self, hiddens, upper_bounds, lower_bounds, lr):
+        self.actor = linearFeedback(self.fc_in_dim, self.action_dim, upper_bounds=upper_bounds, lower_bounds=lower_bounds).to(self.device)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.target_actor = linearFeedback(self.fc_in_dim, self.action_dim, upper_bounds=upper_bounds, lower_bounds=lower_bounds).to(self.device)
+        self.target_actor.load_state_dict(self.actor.state_dict())
+        self.modules += [self.actor, self.target_actor]
+    
+    def _init_critic(self, hiddens, lr):
+        self.critic = quadraticFunc(self.fc_in_dim+self.action_dim).to(self.device)
+        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
+        self.target_critic = quadraticFunc(self.fc_in_dim+self.action_dim).to(self.device)
+        self.target_critic.load_state_dict(self.critic.state_dict())
+        self.modules += [self.critic, self.target_critic]
+
+    def _init_setTrans(self,
+                       num_heads, encoder_fc_hiddens, encoder_depth,
+                       initial_fc_hiddens, initial_fc_output,
+                       pma_fc_hiddens, pma_mab_fc_hiddens, lr):
+        self.setTrans = setTransformer(n_feature=self.sub_obs_dim,
+                                       num_heads=num_heads,
+                                       encoder_fc_hiddens=encoder_fc_hiddens,
+                                       encoder_depth=encoder_depth,
+                                       initial_fc_hiddens=initial_fc_hiddens,
+                                       initial_fc_output=initial_fc_output,
+                                       n_output=self.sub_feature_dim,
+                                       pma_fc_hiddens=pma_fc_hiddens,
+                                       pma_mab_fc_hiddens=pma_mab_fc_hiddens,
+                                       ).to(self.device)
+        self.critic_opt = torch.optim.Adam(list(self.critic.parameters())+list(self.setTrans.parameters()), lr=lr)
+        self.target_setTrans = setTransformer(n_feature=self.sub_obs_dim,
+                                              num_heads=num_heads,
+                                              encoder_fc_hiddens=encoder_fc_hiddens,
+                                              encoder_depth=encoder_depth,
+                                              initial_fc_hiddens=initial_fc_hiddens,
+                                              initial_fc_output=initial_fc_output,
+                                              n_output=self.sub_feature_dim,
+                                              pma_fc_hiddens=pma_fc_hiddens,
+                                              pma_mab_fc_hiddens=pma_mab_fc_hiddens,
+                                              ).to(self.device)
+        self.target_setTrans.load_state_dict(self.setTrans.state_dict())
+        self.modules += [self.setTrans, self.target_setTrans]
+
+    def get_fc_input(self, main_obs: torch.Tensor, sub_seq: torch.Tensor | typing.Iterable[torch.Tensor], target=False, permute=None):
+        '''
+            `main_obs`: shape (batch_size, main_obs_dim)
+            `sub_seq`: shape (batch_size, seq_len, sub_obs_dim)
+        '''
+        aggregator = self.target_setTrans if target else self.setTrans
+        if isinstance(sub_seq, torch.Tensor): 
+            sub_feature = aggregator(sub_seq.to(self.device)) # shape: (batch_size, sub_feature_dim)
+        elif isinstance(sub_seq, typing.Iterable):
+            batch_size = len(sub_seq)
+            sub_feature = torch.zeros((batch_size, self.sub_feature_dim), device=self.device)
+            stacked, indices = autils.var_len_seq_sort(sub_seq)
+            for i in range(len(stacked)):
+                sub_feature[indices[i]] = aggregator(stacked[i].to(self.device))
+        if self.main_obs_dim==0:
+            fc_in = sub_feature
+        else:
+            fc_in = torch.cat([main_obs.to(self.device), sub_feature], dim=-1)
+        return fc_in
+    
+    def _critic(self, main_obs: torch.Tensor, sub_seq: torch.Tensor | typing.Iterable[torch.Tensor], actions:torch.Tensor,
+                target=False, permute=None):
+        critic = self.target_critic if target else self.critic
+        obs = self.get_fc_input(main_obs, sub_seq, target, permute)
+        Q = critic(torch.cat((obs, actions), dim=-1))
+        return Q
+    
+    def update(self, trans_dict, n_update=1, mode="mc"):
+        res = super().update(trans_dict, n_update, mode)
+        self.soft_update(self.setTrans, self.target_setTrans)
+        return res
     
 class setTransSAC(setTransDDPG, SAC):
     def __init__(self, main_obs_dim: int, sub_obs_dim: int, sub_feature_dim: int, action_dim: int, 

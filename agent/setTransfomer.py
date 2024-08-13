@@ -27,10 +27,8 @@ class MAB(baseModule):
         self.layerNorm1 = nn.LayerNorm(n_feature)
 
     def forward(self, x:torch.Tensor, y:torch.Tensor) -> torch.Tensor:
-        # H = self.layerNorm0(self.mhAtt(x, y, y)[0]+x)
-        # z = self.layerNorm1(self.rFC(H)+H)
-        H = torch.layer_norm(self.mhAtt(x, y, y)[0]+x, x.shape[-2:])
-        z = torch.layer_norm(self.rFC(H)+H, H.shape[-2:])
+        H = self.layerNorm0(self.mhAtt(x, y, y)[0]+x)
+        z = self.layerNorm1(self.rFC(H)+H)
         return z
 
 class SAB(MAB):

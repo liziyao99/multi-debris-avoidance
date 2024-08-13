@@ -117,6 +117,39 @@ class boundedFcNet(fcNet):
         '''
         return self.obc.uniSample(size)
     
+class linearFeedback(boundedFcNet):
+    def __init__(self, n_feature:int, n_output:int, bias=False, 
+                 upper_bounds:torch.Tensor|None=None,
+                 lower_bounds:torch.Tensor|None=None,):
+        baseModule.__init__(self)
+        self.n_feature = n_feature
+        self.n_output = n_output
+        self.linear = nn.Linear(n_feature, n_output, bias=bias)
+        if upper_bounds is None:
+            upper_bounds = torch.tensor([ torch.inf]*n_output)
+        if lower_bounds is None:
+            lower_bounds = torch.tensor([-torch.inf]*n_output)
+        self.obc = outputBoundConfig(upper_bounds, lower_bounds)
+        '''
+            see `outputBoundConfig_mp`.
+        '''
+
+    def forward(self, x):
+        u = self.linear(x)
+        return self.post_process(u)
+    
+class quadraticFunc(baseModule):
+    def __init__(self, n_feature:int, n_rank:int|None=None):
+        super().__init__()
+        self.n_feature = n_feature
+        self.n_output = 1
+        self.n_rank = n_feature if n_rank is None else n_rank
+        self.L = nn.Parameter(torch.randn((self.n_feature, self.n_rank)))
+        self.b = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x:torch.Tensor):
+        return -torch.sum((x@self.L)**2, dim=-1, keepdim=True) + self.b
+    
 class ballFcNet(boundedFcNet):
     def __init__(self,
                  n_feature:int,

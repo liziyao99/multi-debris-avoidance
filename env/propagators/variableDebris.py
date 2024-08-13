@@ -7,6 +7,85 @@ from utils import lineProj, penaltyFuncPosi, dotEachRow
 from env.dynamic import cwutils
 import agent.utils as autils
 
+class kineticModel:
+    def __init__(self,
+                 dim:int,
+                 max_thrust:float,
+                 dt=.1, 
+                 n_substep=1,
+                 max_dist=1e3, 
+                 gamma:float=None,
+                 device:str=None) -> None:
+        self.dim = dim
+        self.max_thrust = max_thrust
+        self.max_dist = max_dist
+        self.dt = dt
+        self.n_substep = n_substep
+        self.gamma = gamma
+        self.device = device
+
+        self._ps0_scale = torch.zeros(dim*2, device=device)
+        self._ps0_scale[:dim] = self.max_dist/10
+        self._ps0_scale[dim:] = self.max_dist/1000
+        self.primal_state0_dist = torch.distributions.Normal(
+            loc=torch.zeros_like(self._ps0_scale),
+            scale=self._ps0_scale)
+        
+        self._obs_zoom = torch.zeros(dim*2, device=device)
+        self._obs_zoom[:dim] = 1/max_dist
+        self._obs_zoom[dim:] = 10/max_dist
+        self._obs_zoom = self._obs_zoom.reshape((1, dim*2))
+
+    def _propagate(self, 
+                   primal_states:torch.Tensor, 
+                   actions:torch.Tensor, 
+                   require_grad=False):
+        next_primal_states = self.getNextStates(primal_states, actions, require_grad=require_grad)
+        rewards = self.getRewards(next_primal_states, actions, require_grad=require_grad)
+        dones = self.getDones(next_primal_states, require_grad=False)
+        next_primal_obss = self.getObss(next_primal_states, require_grad=require_grad)
+        return next_primal_states, rewards, dones, next_primal_obss
+
+    def randomPrimalStates(self, n:int) -> torch.Tensor:
+        return self.primal_state0_dist.sample((n,))
+    
+    def getNextStates(self, primal_states:torch.Tensor, actions:torch.Tensor, require_grad=False):
+        '''
+            args:
+                `primal_states`: shape: (n_primal, 6)
+                `debris_states`: shape: (n_debris, 6)
+                `actions`: shape: (n_primal, 3)
+        '''
+        with torch.set_grad_enabled(require_grad):
+            next_primal_states = primal_states.clone()
+            next_primal_states[:,:self.dim] = next_primal_states[:,:self.dim] + next_primal_states[:,self.dim:]*self.dt
+            next_primal_states[:,self.dim:] = next_primal_states[:,self.dim:] + actions*self.max_thrust*self.dt
+            return next_primal_states
+        
+    def getObss(self, primal_states:torch.Tensor, require_grad=False):
+        return primal_states*self._obs_zoom
+        
+    def getRewards(self, primal_states:torch.Tensor, actions:torch.Tensor, require_grad=False) -> torch.Tensor:
+        '''
+            args:
+                `primal_states`: shape: (n_primal, 6)
+                `debris_states`: shape: (n_debris, 6)
+                `actions`: shape: (n_primal, 3)
+            returns:
+                `rewards`: shape: (n_primal,)
+        '''
+        with torch.set_grad_enabled(require_grad):
+            obss = primal_states*self._obs_zoom
+            rewards = -obss.norm(dim=-1)
+            return rewards
+        
+    def getDones(self, primal_states:torch.Tensor, require_grad=False) -> torch.Tensor:
+        with torch.set_grad_enabled(require_grad):
+            d2o = primal_states[:,:self.dim].norm(dim=-1)
+            dones_out = d2o>self.max_dist
+            dones = dones_out
+            return dones
+
 class vdPropagator:
     def __init__(self,
                  max_n_debris:int,
@@ -211,21 +290,23 @@ class vdPropagator:
                 `rewards`: shape: (n_primal,)
         '''
         with torch.set_grad_enabled(require_grad):
-            distances = self.distances(primal_states, debris_states, require_grad=require_grad)
-            any_collision = (distances<self.safe_dist).any(dim=-1)
-            collision_rewards = any_collision.float()*self.collision_reward
+            # distances = self.distances(primal_states, debris_states, require_grad=require_grad)
+            # any_collision = (distances<self.safe_dist).any(dim=-1)
+            # collision_rewards = any_collision.float()*self.collision_reward
 
             fuel_rewards = (1-actions.norm(dim=-1))*self.beta_action
 
             d2o = primal_states[:,:3].norm(dim=-1)
-            in_area = d2o<self.max_dist
-            # area_rewards = self.area_reward*torch.where(in_area, 1-d2o/self.max_dist, self.collision_reward*torch.ones_like(d2o))
-            area_rewards = 1 - d2o/self.max_dist
+            # area_rewards = 1 - d2o/self.max_dist
+            area_rewards = 1
 
             vel = primal_states[:,3:].norm(dim=-1)
             vel_rewards = -vel*self.beta_vel
 
-            rewards = collision_rewards + fuel_rewards + area_rewards + vel_rewards
+            trend_rewards_each, _ = self._trend_analysis(primal_states, debris_states, require_grad=require_grad)
+            trend_rewards, _ = torch.min(trend_rewards_each, dim=-1)
+
+            rewards = fuel_rewards + area_rewards + trend_rewards
             if self.gamma is not None:
                 if self.gamma>=1 or self.gamma<0:
                     raise ValueError("Invalid gamma")
@@ -242,10 +323,8 @@ class vdPropagator:
                 `rewards`: shape: (n_primal,)
         '''
         with torch.set_grad_enabled(require_grad):
-            distances = self.distances(primal_states, debris_states, require_grad=require_grad)
-            rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)            
-            rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
-            collision_rewards = penaltyFuncPosi(distances, 1/self.safe_dist)*abs(self.collision_reward)
+            # distances = self.distances(primal_states, debris_states, require_grad=require_grad)
+            # collision_rewards = penaltyFuncPosi(distances, 1/self.safe_dist)*abs(self.collision_reward)
 
             fuel_rewards = (1-actions.norm(dim=-1))*self.beta_action
 
@@ -256,13 +335,48 @@ class vdPropagator:
 
             vel = primal_states[:,3:].norm(dim=-1)
             vel_rewards = -vel*self.beta_vel
-
-            rewards = collision_rewards + fuel_rewards + area_rewards + vel_rewards
+            
+            rewards = fuel_rewards + area_rewards
             if self.gamma is not None:
                 if self.gamma>=1 or self.gamma<0:
                     raise ValueError("Invalid gamma")
                 rewards = rewards*(1-self.gamma)
             return rewards
+        
+    def _trend_analysis(self, primal_states:torch.Tensor, debris_states:torch.Tensor, require_grad=False):
+        with torch.set_grad_enabled(require_grad):
+            rel_states = debris_states.unsqueeze(dim=0) - primal_states.unsqueeze(dim=1) # shape: (n_primal, n_debris, 6)            
+            rel_pos, rel_vel = rel_states[:,:,:3], rel_states[:,:,3:]
+            r, v = torch.norm(rel_pos, dim=-1), torch.norm(rel_vel, dim=-1) # shape: (n_primal, n_debris)
+            
+            trend_rewards_each = torch.zeros_like(r)
+
+            collided = r<=self.safe_dist
+            sin_phi = torch.clip(self.safe_dist/r, max=1-1e-10)
+            cos_phi = torch.sqrt(1-sin_phi**2)
+            trend_rewards_each = torch.where(collided, -1., trend_rewards_each)
+            rpn, rvn = rel_pos.norm(dim=-1, keepdim=True), rel_vel.norm(dim=-1, keepdim=True) # shape: (n_primal, n_debris, 1)
+            rpd, rvd = rel_pos/rpn, rel_vel/rvn # shape: (n_primal, n_debris, 3)
+            cos_theta = dotEachRow(rpd, rvd) # shape: (n_primal, n_debris)
+            sin_theta = torch.sqrt(1-torch.clip(cos_theta**2, max=1.)+1e-10) # in case sqrt(0), which lead to grad nan.
+            # cos_psi = -torch.cos(phi)*cos_theta + torch.sin(phi)*sin_theta
+            sin_psi = -sin_phi*cos_theta - cos_phi*sin_theta
+            separating = ~collided & (cos_theta>=0)
+            collision_vel = cos_theta*v
+            # trend_rewards_each = torch.where(separating, 0., trend_rewards_each)
+            t2c = (r-self.safe_dist)/collision_vel # time to collision, >0
+            delta_v = sin_psi*v
+            t4a = delta_v/self.max_thrust # time for avoidance
+            trend_rewards_each = torch.where(~collided&~separating, torch.clip(-t4a/t2c, min=-1., max=0.), trend_rewards_each)
+
+            info = {
+                "collided": collided,
+                "separating": separating,
+                "sin_phi":sin_phi, "cos_theta":cos_theta, "sin_psi":sin_psi, "delta_v":delta_v,
+                "t2c":t2c, "t4a":t4a,
+            }
+
+            return trend_rewards_each, info
         
     def getDones(self, primal_states:torch.Tensor, debris_states:torch.Tensor, require_grad=False) -> torch.Tensor:
         '''
@@ -418,4 +532,31 @@ class vdPropagatorPlane(vdPropagator):
             states[:,:3] = states[:,:3] - self.dt*states[:,3:]
         if old is not None:
             states = torch.cat((old, states), dim=0)
+        return states
+    
+class vdPropagatorDummy(vdPropagatorPlane):
+    '''
+        debris don't move.
+    '''
+    def __init__(self, max_n_debris: int, max_thrust: float, dt=0.1, n_substep=1, orbit_rad=7000000, max_dist=1000, safe_dist=50, view_dist=10000, p_new_debris=0.001, gamma: float = None, device: str = None) -> None:
+        super().__init__(max_n_debris, max_thrust, dt, n_substep, orbit_rad, max_dist, safe_dist, view_dist, p_new_debris, gamma, device)
+    
+    def getNextStates(self, primal_states:torch.Tensor, debris_states:torch.Tensor, actions:torch.Tensor, require_grad=False):
+        '''
+            args:
+                `primal_states`: shape: (n_primal, 6)
+                `debris_states`: shape: (n_debris, 6)
+                `actions`: shape: (n_primal, 3)
+        '''
+        with torch.set_grad_enabled(require_grad):
+            next_primal_states = primal_states@self.trans_mat.T
+            next_debris_states = debris_states.clone()
+            con_vec = self.conVecs(actions, require_grad=require_grad) # shape: (n_primal, 6)
+            next_primal_states = next_primal_states + con_vec
+            return next_primal_states, next_debris_states
+        
+    def randomDebrisStates(self, n:int, old:torch.Tensor=None) -> torch.Tensor:
+        stateC = self.debris_stateC_dist.sample((n,))
+        stateC[:,3:] = 0.
+        states = stateC
         return states
